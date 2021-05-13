@@ -4,17 +4,22 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import GroupKFold,GroupShuffleSplit
 from sklearn.preprocessing import OneHotEncoder
-from sklearn.ensemble import RandomForestClassifier,GradientBoostingClassifier
+from sklearn.ensemble import RandomForestClassifier,GradientBoostingClassifier,AdaBoostClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-model", type=str, default="RandomForest", choices=['RandomForest', 'BoostedTree', 'LogistiRegression'], help="Model type to use")
+    parser.add_argument("-model", type=str, default="RandomForest", 
+                            choices=['RandomForest', 'BoostedTree', 'AdaBoost', 'LogisticRegression', 'RandomForest_seippel'], 
+                            help="Model type to use")
     parser.add_argument("-nfolds", type=int, default=10, help="Number of cross validation folds")
     parser.add_argument("-seed", type=int, default=7, help="Seed for controlling randomness")
     parser.add_argument("-nestimators", type=int, default=100, help="nestimators for random Forest and boosted Tree classifier")
     parser.add_argument("-data_frac", type=float, default=1., help="fraction of data to use")
-
+    parser.add_argument("-max_depth", type=int, default=3, help="Max depth for gradient boosting")
+    parser.add_argument("-verbose", type=int, default=0, help="Verbosity")
+    
     args = parser.parse_args()
     return args
 
@@ -142,7 +147,13 @@ def main():
         if args.model == 'RandomForest':
             clf = RandomForestClassifier(n_estimators=args.nestimators, random_state=args.seed)
         elif args.model == 'BoostedTree':
-            clf = GradientBoostingClassifier(n_estimators=args.nestimators, random_state=args.seed)
+            clf = GradientBoostingClassifier(n_estimators=args.nestimators, random_state=args.seed, max_depth=args.max_depth)
+        elif args.model == 'AdaBoost':
+            clf = AdaBoostClassifier(n_estimators=args.nestimators, random_state=args.seed)
+        elif args.model == 'RandomForest_seippel':
+            clf = RandomForestClassifier(n_estimators=400, random_state=args.seed, max_depth=200, verbose=2, min_samples_leaf=70, max_features=0.2)
+        elif args.model == 'LogisticRegression':
+            clf = LogisticRegression(random_state=args.seed, verbose=args.verbose)
         else:
             raise ValueError(f"Unkown model {args.model}")
 
