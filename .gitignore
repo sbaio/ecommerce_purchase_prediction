@@ -1,0 +1,5 @@
+.tmp/
+data/
+other/
+__pycache__/
+*.pdf
