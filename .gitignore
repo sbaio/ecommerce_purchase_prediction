@@ -3,3 +3,4 @@ data/
 other/
 __pycache__/
 *.pdf
+.ipynb_checkpoints/
