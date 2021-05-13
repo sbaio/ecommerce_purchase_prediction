@@ -2,13 +2,12 @@ import argparse
 from time import time
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import GroupKFold,GroupShuffleSplit
+from sklearn.model_selection import GroupKFold
 from sklearn.compose import make_column_transformer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.ensemble import RandomForestClassifier,GradientBoostingClassifier,AdaBoostClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
-from sklearn.pipeline import Pipeline
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -21,6 +20,7 @@ def parse_args():
     parser.add_argument("-data_frac", type=float, default=1., help="fraction of data to use")
     parser.add_argument("-max_depth", type=int, default=3, help="Max depth for gradient boosting")
     parser.add_argument("-verbose", type=int, default=0, help="Verbosity")
+    parser.add_argument("-drop_nan", type=int, default=1, help="Drop rows with nan")
     
     args = parser.parse_args()
     return args
@@ -80,9 +80,11 @@ def load_training_data(args):
     # add views info
     df = pd.merge(df, aggr_views, right_index=True, left_on=['customerId', 'productId'])
 
-    print("Dropping all rows with nan")
-    df.dropna(inplace=True) # TODO: temporarily remove all rows with missing info
     print(df.shape)
+    if args.drop_nan:
+        print("Dropping all rows with nan")
+        df.dropna(inplace=True) # TODO: temporarily remove all rows with missing info
+        print(df.shape)
     
     frac = args.data_frac
     if frac != 1.:
@@ -108,7 +110,6 @@ def main():
     features, target, customerId = load_training_data(args)
 
     ## preprocessing features
-    # fill missing values
     print("Filling missing values")
     features = fill_missing_values(features)
 
@@ -120,23 +121,15 @@ def main():
     print("Fitting column transformer on categorical variables")
     column_trans.fit(features)
 
-    # features = features.drop(columns=['country', 'productType', 'brand']) 
-    # features.isFemale = features.isFemale.astype(int)
-    # features.isPremier = features.isPremier.astype(int)
-    # features.onSale = features.onSale.astype(int)
-
     # perform a cross-validation and get a validation score
     print("Starting cross-validation")
     kfold = GroupKFold(n_splits=args.nfolds)
-    # kfold = GroupShuffleSplit(n_splits=args.nfolds, test_size=0.1, random_state=args.seed)
 
     aucs = []
     for train_index, val_index in kfold.split(X=features, groups=customerId):
         start = time()
-        # print(train_index[:3], val_index[:3])
-        # print(train_index.shape, val_index.shape)
 
-        # # verify that no customer is common between train and val dataframes
+        # verify that no customer is common between train and val dataframes
         unique_train_customers = customerId.iloc[train_index].unique()
         unique_val_customers = customerId.iloc[val_index].unique()
         assert not len(set(unique_train_customers).intersection(set(unique_val_customers)))

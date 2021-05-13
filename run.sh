@@ -11,4 +11,5 @@
 # python main.py -data_frac=0.1 -model=LogisticRegression -verbose=2 # 0.746 0.006
 # python main.py -data_frac=0.1 -model=RandomForest # ~ 0.66
 ## Added categorical variables as preprocessing
-python main.py -data_frac=0.1 -model=BoostedTree -verbose=2
+# python main.py -data_frac=0.1 -model=BoostedTree -verbose=2 # 0.832 0.009
+python main.py -data_frac=0.1 -model=BoostedTree -verbose=2 -drop_nan=0
