@@ -3,10 +3,12 @@ from time import time
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import GroupKFold,GroupShuffleSplit
+from sklearn.compose import make_column_transformer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.ensemble import RandomForestClassifier,GradientBoostingClassifier,AdaBoostClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from sklearn.pipeline import Pipeline
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -110,18 +112,18 @@ def main():
     print("Filling missing values")
     features = fill_missing_values(features)
 
-    # encode categorical variables # TODO: add categorical variables
-    print("Encoding categorical variables")
-    features = features.drop(columns=['country', 'productType', 'brand']) 
+    # encode categorical variables
+    column_trans = make_column_transformer(
+        (OneHotEncoder(), ["country", "brand", "productType", "isFemale", "isPremier", "onSale"]),
+        remainder="passthrough",
+    )
+    print("Fitting column transformer on categorical variables")
+    column_trans.fit(features)
 
-    # country_enc = OneHotEncoder()
-    # features.country = country_enc.fit_transform(features.country.values)
-
-    # product type
-
-    features.isFemale = features.isFemale.astype(int)
-    features.isPremier = features.isPremier.astype(int)
-    features.onSale = features.onSale.astype(int)
+    # features = features.drop(columns=['country', 'productType', 'brand']) 
+    # features.isFemale = features.isFemale.astype(int)
+    # features.isPremier = features.isPremier.astype(int)
+    # features.onSale = features.onSale.astype(int)
 
     # perform a cross-validation and get a validation score
     print("Starting cross-validation")
@@ -139,20 +141,20 @@ def main():
         unique_val_customers = customerId.iloc[val_index].unique()
         assert not len(set(unique_train_customers).intersection(set(unique_val_customers)))
 
-        train_features = features.iloc[train_index]
+        train_features = column_trans.transform(features.iloc[train_index])
         train_targets = target.iloc[train_index]
-        val_features = features.iloc[val_index]
+        val_features = column_trans.transform(features.iloc[val_index])
         val_targets = target.iloc[val_index]
 
         if args.model == 'RandomForest':
-            clf = RandomForestClassifier(n_estimators=args.nestimators, random_state=args.seed)
+            clf = RandomForestClassifier(n_estimators=args.nestimators, random_state=args.seed, verbose=args.verbose)
         elif args.model == 'BoostedTree':
-            clf = GradientBoostingClassifier(n_estimators=args.nestimators, random_state=args.seed, max_depth=args.max_depth)
+            clf = GradientBoostingClassifier(n_estimators=args.nestimators, random_state=args.seed, max_depth=args.max_depth, verbose=args.verbose)
         elif args.model == 'AdaBoost':
-            clf = AdaBoostClassifier(n_estimators=args.nestimators, random_state=args.seed)
+            clf = AdaBoostClassifier(n_estimators=args.nestimators, random_state=args.seed, verbose=args.verbose)
         elif args.model == 'RandomForest_seippel':
             clf = RandomForestClassifier(n_estimators=400, random_state=args.seed, max_depth=200, verbose=2, min_samples_leaf=70, max_features=0.2)
-        elif args.model == 'LogisticRegression':
+        elif args.model == 'LogisticRegression': # TODO: use ensembling
             clf = LogisticRegression(random_state=args.seed, verbose=args.verbose)
         else:
             raise ValueError(f"Unkown model {args.model}")
@@ -166,13 +168,12 @@ def main():
         print(auc)
         aucs.append(auc)
         print(f"Took {(time()-start):0.3f}s")
-        # for each row, append the customer info, product info, and the views info of customer and product
+        
     val_mean, val_std = np.mean(aucs), np.std(aucs)
     
     print(val_mean, val_std)
 
     
-    # use ensembling (bagging)
     # predict purchasing probabilities on the test data and save the prediction file
     # test_df = pd.read_csv("data/labels_predict.txt")
 
