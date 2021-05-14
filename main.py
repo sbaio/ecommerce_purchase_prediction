@@ -22,11 +22,14 @@ def parse_args():
     parser.add_argument("-seed", type=int, default=7, help="Seed for controlling randomness")
     parser.add_argument("-n_estimators", type=int, default=100, help="nb estimators for random Forest and boosted Tree classifier")
     parser.add_argument("-data_frac", type=float, default=1., help="fraction of data to use")
-    parser.add_argument("-max_depth", type=int, default=3, help="Max depth for gradient boosting")
+    parser.add_argument("-max_depth", type=int, default=3, help="Max depth for trees")
     parser.add_argument("-verbose", type=int, default=0, help="Verbosity")
     parser.add_argument("-drop_nan", type=int, default=0, help="Drop rows with nan")
     parser.add_argument("-outdir", type=str, default="", help="output directory")
 
+    parser.add_argument("-use_customer_data", type=int, default=1, help="Use customer data ?")
+    parser.add_argument("-use_product_data", type=int, default=1, help="Use product data ?")
+    parser.add_argument("-use_views_data", type=int, default=1, help="Use views data ?")
     parser.add_argument("-use_purchase_data", type=int, default=1, help="Use purchase data ?")
     
     args = parser.parse_args()
@@ -41,8 +44,7 @@ def fill_missing_values_binary_prob(col):
     """
     d = col.value_counts().to_dict()
     p = d[True]/(d[True]+d[False]) # proba of being 1
-    mask = col.isna()
-    ind = col.loc[mask].sample(frac=p).index
+    ind = col.loc[col.isna()].sample(frac=p).index
     col.loc[ind] = 1
     col = col.fillna(0)
     return col
@@ -120,7 +122,6 @@ def load_training_data(args):
     products = pd.read_csv("data/products.txt")
     products = products.drop(columns=['dateOnSite'])
     
-    # use purchase info ???
     if args.use_purchase_data:
         customer_purchase_count, product_purchase_count = get_purchase_info()
 
@@ -130,29 +131,33 @@ def load_training_data(args):
         # add product purchase info ?
         products = pd.merge(products, product_purchase_count, left_on=['productId'], right_on=['productId'], how='left')
 
-    print("Using customers dataframe")
-    print(customers)
-    df = pd.merge(df, customers, left_on=['customerId'], right_on=['customerId'], how='left')
-    
-    print("Using products dataframe")
-    print(products)
-    df = pd.merge(df, products, left_on=['productId'], right_on=['productId'], how='left')
+    if args.use_customer_data:
+        print("Using customers dataframe")
+        print(customers)
+        df = pd.merge(df, customers, left_on=['customerId'], right_on=['customerId'], how='left')
+        
+    if args.use_product_data:
+        print("Using products dataframe")
+        print(products)
+        df = pd.merge(df, products, left_on=['productId'], right_on=['productId'], how='left')
 
+    # fill nan values
     if args.use_purchase_data:
         df.customerPurchaseCount.fillna(0, inplace=True)
         df.productPurchaseCount.fillna(0, inplace=True)
 
     # add views info
-    print("Loading views info ...")
-    views = pd.read_csv("data/views.txt")
-    views = views.drop(columns=['imageZoom']) # discard imageZoom column since all 0 but 1 value
-    aggr_views = views.groupby(['customerId','productId']).sum() # aggregate the views of a customer of a product by summing
-    df = pd.merge(df, aggr_views, right_index=True, left_on=['customerId', 'productId'])
+    if args.use_views_data:
+        print("Loading views info ...")
+        views = pd.read_csv("data/views.txt")
+        views = views.drop(columns=['imageZoom']) # discard imageZoom column since all 0 but 1 value
+        aggr_views = views.groupby(['customerId','productId']).sum() # aggregate the views of a customer of a product by summing
+        df = pd.merge(df, aggr_views, right_index=True, left_on=['customerId', 'productId'])
 
     print(df.shape)
     if args.drop_nan:
         print("Dropping all rows with nan")
-        df.dropna(inplace=True) # TODO: temporarily remove all rows with missing info
+        df.dropna(inplace=True)
         print(df.shape)
     
     frac = args.data_frac
@@ -167,9 +172,9 @@ def load_training_data(args):
     # productId = df['productId']
     features = df.drop(columns=['purchased', 'customerId', 'productId'])
 
-    # TODO: feature ablation ?
-    cols_to_remove = []
-    features = features.drop(columns=cols_to_remove)
+    ## feature ablation ?
+    # cols_to_remove = []
+    # features = features.drop(columns=cols_to_remove)
     return features, target, customerId
 
 def main(args):
@@ -249,7 +254,7 @@ def main(args):
         val_auc = roc_auc_score(val_targets, val_pred)
         print(val_auc)
         aucs.append(val_auc)
-        print(f"Took {(time()-start):0.3f}s")
+        print(f"[{i}/{args.nfolds}]Took {(time()-start):0.3f}s")
         
         val_mean, val_std = np.mean(aucs), np.std(aucs)
         print(val_mean, val_std)
@@ -301,17 +306,34 @@ def grid_search():
             with open("out.json", "w") as f:
                 json.dump(out, f)
 
-def train_gbtrees():
+def data_ablation():
     args = parse_args()
-    args.n_estimators = 400
-    args.learning_rate = 0.2
-    args.loss = "exponential"
-    args.verbose = 2
+    args.n_estimators = 100
     args.model = "BoostedTree"
-    args.drop_nan = 0
+    args.nfolds = 10
+    args.max_cv_runs = 3
     args.data_frac = 0.1
+    args.drop_nan = 0
+    args.verbose = 2
+    
+    out = {}
+    for use_views_data in [1, 0]:
+        args.use_views_data = use_views_data
+        for use_product_data in [1, 0]:
+            args.use_product_data = use_product_data
+            for use_purchase_data in [1, 0]:
+                args.use_purchase_data = use_purchase_data
+                for use_customer_data in [1, 0]:
+                    args.use_customer_data = use_customer_data
+                    str_ = f"views_{use_views_data}_product_{use_product_data}_purchase_{use_purchase_data}_customer_{use_customer_data}/"
+                    args.outdir = "out/ablation/"+str_
+                    print(str_)
+                    val_out = main(args)
+                    out[str_] = val_out
 
-    main(args)
+                    with open("out/ablation/out.json", "w") as f:
+                        json.dump(out, f)
+    
 
 if __name__ == '__main__':
     # args = parse_args()
@@ -327,6 +349,5 @@ if __name__ == '__main__':
     # main(args)
     # Namespace(data_frac=0.1, drop_nan=0, max_cv_runs=3, max_depth=3, model='BoostedTree', n_estimators=100, nfolds=10, seed=7, verbose=2)
 
-    grid_search()
-
-    # train_gbtrees()
+    # grid_search()
+    data_ablation()
