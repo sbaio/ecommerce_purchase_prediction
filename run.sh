@@ -14,4 +14,4 @@
 # python main.py -data_frac=0.1 -model=BoostedTree -verbose=2 # 0.832 0.009
 ## Do not drop nan values
 # python main.py -data_frac=0.1 -model=BoostedTree -verbose=2 -drop_nan=0 # 0.848 0.005
-python main.py -data_frac=0.1 -model=BoostedTree -verbose=2 -drop_nan=0
+python main.py -data_frac=0.1 -model=BoostedTree -verbose=2 -drop_nan=0 -max_cv_runs

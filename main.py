@@ -16,6 +16,7 @@ def parse_args():
                             choices=['RandomForest', 'BoostedTree', 'AdaBoost', 'LogisticRegression', 'RandomForest_seippel'], 
                             help="Model type to use")
     parser.add_argument("-nfolds", type=int, default=10, help="Number of cross validation folds")
+    parser.add_argument("-max_cv_runs", type=int, default=-1, help="after how many cv folds to stop ? if -1 run all folds")
     parser.add_argument("-seed", type=int, default=7, help="Seed for controlling randomness")
     parser.add_argument("-n_estimators", type=int, default=100, help="nb estimators for random Forest and boosted Tree classifier")
     parser.add_argument("-data_frac", type=float, default=1., help="fraction of data to use")
@@ -62,7 +63,6 @@ def sample_customers(X, target, groups, frac=0.1):
     sample_X = X.iloc[val_index]
     sample_targets = target.iloc[val_index]
     return sample_X, sample_targets, val_index
-
 
 def load_training_data(args):
     # load data
@@ -127,8 +127,8 @@ def main(args):
 
     aucs = []
     for i, (train_index, val_index) in enumerate(kfold.split(X=features, groups=customerId)):
-        # if i >= 3:
-        #     continue
+        if args.max_cv_runs >0 and i >= args.max_cv_runs:
+            continue
         start = time()
 
         # verify that no customer is common between train and val dataframes
@@ -187,17 +187,21 @@ def main(args):
     
 def grid_search():
     args = parse_args()
-    assert args.model == 'BoostedTree'
-
+    args.data_frac = 0.1
+    args.model = "BoostedTree"
+    args.verbose = 2
+    args.drop_nan = 0
+    args.max_cv_runs = 3
+    
     param_ranges = {
-        "loss":["deviance", "exponential"],
-        "n_estimators":[100, 50, 200, 400],
-        "learning_rate":[0.1, 0.05, 0.2],
-        "subsample":[1.0, 0.5],
-        "criterion":['friedman_mse', "mse"],
-        "min_samples_split":[2, 5, 8],
+        "loss":["exponential"],#["deviance", "exponential"],
+        "n_estimators":[400],#[100, 50, 200, 400],
+        "learning_rate":[0.2],#[0.1, 0.05, 0.2],
+        "subsample":[1.0],#, 0.5],
+        "criterion":['friedman_mse'],#, "mse"],
         "max_depth":[3, 5, 10, 50],
-        "max_features":['auto', 'sqrt', 'log2'],
+        # "min_samples_split":[2, 5, 8],
+        # "max_features":['auto', 'sqrt', 'log2'],
     }
     default_d = dict([(k,v[0]) for k,v in param_ranges.items()])
     
@@ -217,9 +221,22 @@ def grid_search():
             with open("out.json", "w") as f:
                 json.dump(out, f)
 
+def train_gbtrees():
+    args = parse_args()
+    args.n_estimators = 400
+    args.learning_rate = 0.2
+    args.loss = "exponential"
+    args.verbose = 2
+    args.model = "BoostedTree"
+    args.drop_nan = 0
+    args.data_frac = 0.1
+
+    main(args)
 
 if __name__ == '__main__':
     # args = parse_args()
     # main(args)
 
     grid_search()
+
+    # train_gbtrees()

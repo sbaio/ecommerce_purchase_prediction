@@ -4,3 +4,5 @@ other/
 __pycache__/
 *.pdf
 .ipynb_checkpoints/
+out.json
+out/
