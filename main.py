@@ -1,4 +1,6 @@
 import argparse
+import pickle
+import os
 from time import time
 import pandas as pd
 import numpy as np
@@ -12,7 +14,7 @@ from sklearn.metrics import roc_auc_score
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-model", type=str, default="RandomForest", 
+    parser.add_argument("-model", type=str, default="BoostedTree", 
                             choices=['RandomForest', 'BoostedTree', 'AdaBoost', 'LogisticRegression', 'RandomForest_seippel'], 
                             help="Model type to use")
     parser.add_argument("-nfolds", type=int, default=10, help="Number of cross validation folds")
@@ -22,9 +24,15 @@ def parse_args():
     parser.add_argument("-data_frac", type=float, default=1., help="fraction of data to use")
     parser.add_argument("-max_depth", type=int, default=3, help="Max depth for gradient boosting")
     parser.add_argument("-verbose", type=int, default=0, help="Verbosity")
-    parser.add_argument("-drop_nan", type=int, default=1, help="Drop rows with nan")
+    parser.add_argument("-drop_nan", type=int, default=0, help="Drop rows with nan")
+    parser.add_argument("-outdir", type=str, default="", help="output directory")
+
+    parser.add_argument("-use_purchase_data", type=int, default=1, help="Use purchase data ?")
     
     args = parser.parse_args()
+    if args.max_cv_runs <=0:
+        args.max_cv_runs = args.nfolds
+
     return args
 
 def fill_missing_values_binary_prob(col):
@@ -64,21 +72,81 @@ def sample_customers(X, target, groups, frac=0.1):
     sample_targets = target.iloc[val_index]
     return sample_X, sample_targets, val_index
 
+def get_purchase_info():
+    purchases = pd.read_csv("data/purchases.txt")
+    purchases = purchases[purchases['date'] < '2016-12-31T23:59:59'] # consider only dates before january
+    print(purchases.shape)
+
+    # remove customer-product pairs in test dataframe
+    test_df = pd.read_csv("data/labels_predict.txt")
+    print(test_df.shape)
+    purchases['customer_product'] = purchases['customerId'].astype(str) + '_' + purchases['productId'].astype(str)
+    test_df['customer_product'] = test_df['customerId'].astype(str) + '_' + test_df['productId'].astype(str)
+
+    # filter out purchases in the test set
+    filtered_purchases = purchases[~purchases.customer_product.isin(test_df.customer_product)].drop(columns=['customer_product'])
+    
+    filtered_purchases['customerPurchaseCount'] = 1 # add a column to count
+    customer_purchase_count = filtered_purchases.groupby('customerId').agg({'customerPurchaseCount':'sum'})
+    print(customer_purchase_count)
+
+    filtered_purchases['productPurchaseCount'] = 1 # add a column to count
+    product_purchase_count = filtered_purchases.groupby('productId').agg({'productPurchaseCount':'sum'})
+    print(product_purchase_count)
+    
+    return customer_purchase_count, product_purchase_count
+
+def process_date_col(col):
+    date = pd.to_datetime(col, errors='coerce')
+    print(f'Nb nan : {date.dt.month.isna().sum()}, filling with median ...')
+    date = date.fillna(date.median())
+
+    return pd.DataFrame({
+        # 'year':date.dt.year,
+        'month':date.dt.month, # categorical 12
+        'week':date.dt.isocalendar().week,# categorical 53
+        'day':date.dt.day, # categorical 31
+        'dayname':date.dt.day_name(), # categorical 7
+    })
+
 def load_training_data(args):
-    # load data
+    # load training pairs
     df = pd.read_csv("data/labels_training.txt")
+
+    # load customer info
+    customers = pd.read_csv("data/customers.txt")
+
+    # load product info
+    products = pd.read_csv("data/products.txt")
+    products = products.drop(columns=['dateOnSite'])
+    
+    # use purchase info ???
+    if args.use_purchase_data:
+        customer_purchase_count, product_purchase_count = get_purchase_info()
+
+        # add customer purchase info ?
+        customers = pd.merge(customers, customer_purchase_count, left_on=['customerId'], right_on=['customerId'], how='left')
+
+        # add product purchase info ?
+        products = pd.merge(products, product_purchase_count, left_on=['productId'], right_on=['productId'], how='left')
+
+    print("Using customers dataframe")
+    print(customers)
+    df = pd.merge(df, customers, left_on=['customerId'], right_on=['customerId'], how='left')
+    
+    print("Using products dataframe")
+    print(products)
+    df = pd.merge(df, products, left_on=['productId'], right_on=['productId'], how='left')
+
+    if args.use_purchase_data:
+        df.customerPurchaseCount.fillna(0, inplace=True)
+        df.productPurchaseCount.fillna(0, inplace=True)
+
+    # add views info
+    print("Loading views info ...")
     views = pd.read_csv("data/views.txt")
     views = views.drop(columns=['imageZoom']) # discard imageZoom column since all 0 but 1 value
     aggr_views = views.groupby(['customerId','productId']).sum() # aggregate the views of a customer of a product by summing
-
-    # add customer info
-    customers = pd.read_csv("data/customers.txt")
-    df = pd.merge(df, customers, left_on=['customerId'], right_on=['customerId'], how='left')
-    # add product info
-    products = pd.read_csv("data/products.txt")
-    products = products.drop(columns=['dateOnSite'])
-    df = pd.merge(df, products, left_on=['productId'], right_on=['productId'], how='left')
-    # add views info
     df = pd.merge(df, aggr_views, right_index=True, left_on=['customerId', 'productId'])
 
     print(df.shape)
@@ -99,6 +167,9 @@ def load_training_data(args):
     # productId = df['productId']
     features = df.drop(columns=['purchased', 'customerId', 'productId'])
 
+    # TODO: feature ablation ?
+    cols_to_remove = []
+    features = features.drop(columns=cols_to_remove)
     return features, target, customerId
 
 def main(args):
@@ -114,8 +185,12 @@ def main(args):
     features = fill_missing_values(features)
 
     # encode categorical variables
+    columns = features.columns
+    print(columns)
+    cols_to_encode = ["country", "brand", "productType", "isFemale", "isPremier", "onSale"]
+    cols_to_encode = [k for k in cols_to_encode if k in columns]
     column_trans = make_column_transformer(
-        (OneHotEncoder(), ["country", "brand", "productType", "isFemale", "isPremier", "onSale"]),
+        (OneHotEncoder(), cols_to_encode),
         remainder="passthrough",
     )
     print("Fitting column transformer on categorical variables")
@@ -127,7 +202,7 @@ def main(args):
 
     aucs = []
     for i, (train_index, val_index) in enumerate(kfold.split(X=features, groups=customerId)):
-        if args.max_cv_runs >0 and i >= args.max_cv_runs:
+        if i >= args.max_cv_runs:
             continue
         start = time()
 
@@ -179,7 +254,12 @@ def main(args):
         val_mean, val_std = np.mean(aucs), np.std(aucs)
         print(val_mean, val_std)
 
-    
+        # save model
+        if args.outdir:
+            os.makedirs(args.outdir, exist_ok=True)
+            filename = os.path.join(args.outdir, f'model_{i}.pkl')
+            pickle.dump(clf, open(filename, 'wb'))
+
     # predict purchasing probabilities on the test data and save the prediction file
     # test_df = pd.read_csv("data/labels_predict.txt")
 
@@ -194,12 +274,12 @@ def grid_search():
     args.max_cv_runs = 3
     
     param_ranges = {
-        "loss":["exponential"],#["deviance", "exponential"],
-        "n_estimators":[400],#[100, 50, 200, 400],
-        "learning_rate":[0.2],#[0.1, 0.05, 0.2],
-        "subsample":[1.0],#, 0.5],
-        "criterion":['friedman_mse'],#, "mse"],
-        "max_depth":[3, 5, 10, 50],
+        # "loss":["exponential"],#["deviance", "exponential"],
+        "n_estimators":[50, 100, 250, 500, 600],#[100, 50, 200, 400],
+        # "learning_rate":[0.1],#[0.1, 0.05, 0.2],
+        # "subsample":[1.0],#, 0.5],
+        # "criterion":['friedman_mse'],#, "mse"],
+        # "max_depth":[3],#, 5, 10, 50
         # "min_samples_split":[2, 5, 8],
         # "max_features":['auto', 'sqrt', 'log2'],
     }
@@ -235,7 +315,17 @@ def train_gbtrees():
 
 if __name__ == '__main__':
     # args = parse_args()
+    # args.data_frac = 0.1
+    # args.drop_nan = 0
+    # args.max_cv_runs = 3
+    # args.max_depth = 3
+    # args.model = "BoostedTree"
+    # args.n_estimators = 100
+    # args.nfolds = 10
+    # args.seed = 7
+    # args.verbose = 2
     # main(args)
+    # Namespace(data_frac=0.1, drop_nan=0, max_cv_runs=3, max_depth=3, model='BoostedTree', n_estimators=100, nfolds=10, seed=7, verbose=2)
 
     grid_search()
 
