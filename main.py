@@ -280,8 +280,9 @@ def grid_search():
     args.drop_nan = 0
     args.max_cv_runs = 3
     args.nfolds = 10
+    args.n_estimators = 100
     # args.outdir = "out/nestimators/"
-    args.outdir = "out/min_samples_split/"; args.n_estimators = 200
+    args.outdir = "out/min_samples_split/"
     if not os.path.exists(args.outdir):
         os.makedirs(args.outdir)
 
