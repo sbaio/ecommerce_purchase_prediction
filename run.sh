@@ -15,5 +15,5 @@
 ## Do not drop nan values
 # python main.py -data_frac=0.1 -model=BoostedTree -verbose=2 -drop_nan=0 # 0.848 0.005
 ## feature selection
-python main.py -data_frac=0.1 -n_estimators=500 -model=BoostedTree -verbose=2 -drop_nan=0 -max_cv_runs=3 -outdir=out/
-# python main.py -data_frac=1.0 -n_estimators=500 -model=BoostedTree -verbose=2 -drop_nan=0 -max_cv_runs=3 -outdir=out/
+# python main.py -data_frac=0.1 -n_estimators=500 -model=BoostedTree -verbose=2 -drop_nan=0 -max_cv_runs=3 -outdir=out/
+python main.py -data_frac=1.0 -n_estimators=500 -model=BoostedTree -verbose=2 -drop_nan=0 -max_cv_runs=3 -outdir=out/n500_frac1

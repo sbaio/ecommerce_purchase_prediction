@@ -126,10 +126,12 @@ def load_training_data(args):
         customer_purchase_count, product_purchase_count = get_purchase_info()
 
         # add customer purchase info ?
-        customers = pd.merge(customers, customer_purchase_count, left_on=['customerId'], right_on=['customerId'], how='left')
+        df = pd.merge(df, customer_purchase_count, left_on=['customerId'], right_on=['customerId'], how='left')
+        df.customerPurchaseCount.fillna(0, inplace=True)
 
         # add product purchase info ?
-        products = pd.merge(products, product_purchase_count, left_on=['productId'], right_on=['productId'], how='left')
+        df = pd.merge(df, product_purchase_count, left_on=['productId'], right_on=['productId'], how='left')
+        df.productPurchaseCount.fillna(0, inplace=True)
 
     if args.use_customer_data:
         print("Using customers dataframe")
@@ -141,10 +143,10 @@ def load_training_data(args):
         print(products)
         df = pd.merge(df, products, left_on=['productId'], right_on=['productId'], how='left')
 
-    # fill nan values
-    if args.use_purchase_data:
-        df.customerPurchaseCount.fillna(0, inplace=True)
-        df.productPurchaseCount.fillna(0, inplace=True)
+    # # fill nan values
+    # if args.use_purchase_data:
+    #     df.customerPurchaseCount.fillna(0, inplace=True)
+    #     df.productPurchaseCount.fillna(0, inplace=True)
 
     # add views info
     if args.use_views_data:
@@ -277,15 +279,20 @@ def grid_search():
     args.verbose = 2
     args.drop_nan = 0
     args.max_cv_runs = 3
-    
+    args.nfolds = 10
+    # args.outdir = "out/nestimators/"
+    args.outdir = "out/min_samples_split/"; args.n_estimators = 200
+    if not os.path.exists(args.outdir):
+        os.makedirs(args.outdir)
+
     param_ranges = {
         # "loss":["exponential"],#["deviance", "exponential"],
-        "n_estimators":[50, 100, 250, 500, 600],#[100, 50, 200, 400],
+        # "n_estimators":[200, 300],#[100, 50, 200, 400],50, 100, 250, 500
         # "learning_rate":[0.1],#[0.1, 0.05, 0.2],
         # "subsample":[1.0],#, 0.5],
         # "criterion":['friedman_mse'],#, "mse"],
         # "max_depth":[3],#, 5, 10, 50
-        # "min_samples_split":[2, 5, 8],
+        "min_samples_split":[10, 100], # 2
         # "max_features":['auto', 'sqrt', 'log2'],
     }
     default_d = dict([(k,v[0]) for k,v in param_ranges.items()])
@@ -303,7 +310,7 @@ def grid_search():
             val_out = main(args_)
             out[param][val] = val_out
 
-            with open("out.json", "w") as f:
+            with open(args.outdir+"out.json", "w") as f:
                 json.dump(out, f)
 
 def data_ablation():
@@ -317,6 +324,11 @@ def data_ablation():
     args.verbose = 2
     
     out = {}
+    outfile = "out/ablation/out.json"
+    if os.path.exists(outfile):
+        with open(outfile, "r") as f:
+            out = json.load(f)
+
     for use_views_data in [1, 0]:
         args.use_views_data = use_views_data
         for use_product_data in [1, 0]:
@@ -326,17 +338,18 @@ def data_ablation():
                 for use_customer_data in [1, 0]:
                     args.use_customer_data = use_customer_data
                     str_ = f"views_{use_views_data}_product_{use_product_data}_purchase_{use_purchase_data}_customer_{use_customer_data}/"
-                    args.outdir = "out/ablation/"+str_
                     print(str_)
+                    if str_ in out:
+                        continue
+                    args.outdir = "out/ablation/"+str_
                     val_out = main(args)
                     out[str_] = val_out
 
-                    with open("out/ablation/out.json", "w") as f:
+                    with open(outfile, "w") as f:
                         json.dump(out, f)
-    
 
 if __name__ == '__main__':
-    # args = parse_args()
+    args = parse_args()
     # args.data_frac = 0.1
     # args.drop_nan = 0
     # args.max_cv_runs = 3
@@ -346,8 +359,8 @@ if __name__ == '__main__':
     # args.nfolds = 10
     # args.seed = 7
     # args.verbose = 2
-    # main(args)
+    main(args)
     # Namespace(data_frac=0.1, drop_nan=0, max_cv_runs=3, max_depth=3, model='BoostedTree', n_estimators=100, nfolds=10, seed=7, verbose=2)
 
     # grid_search()
-    data_ablation()
+    # data_ablation()
