@@ -42,12 +42,14 @@ def fill_missing_values_binary_prob(col):
     """
     Fills the column missing value with the same distribution as the non missing ones
     """
-    d = col.value_counts().to_dict()
+    col_ = col.copy()
+    d = col_.value_counts().to_dict()
     p = d[True]/(d[True]+d[False]) # proba of being 1
-    ind = col.loc[col.isna()].sample(frac=p).index
-    col.loc[ind] = 1
-    col = col.fillna(0)
-    return col
+    mask = col_.isna()
+    ind = col_.loc[mask].sample(frac=p).index
+    col_.loc[ind] = 1
+    col_.fillna(0, inplace=True)
+    return col_
 
 def fill_missing_values(features):
     # find columns with missing values
@@ -55,7 +57,7 @@ def fill_missing_values(features):
 
     if 'country' in missing_vals_cols:
         # fill missing country by adding a new
-        features.country = features.country.fillna('unknown')
+        features.country.fillna('unknown', inplace=True)
     if 'isFemale' in missing_vals_cols:
         # fill binary variables by sampling from their non missing distribution
         features.isFemale = fill_missing_values_binary_prob(features.isFemale)
@@ -67,21 +69,21 @@ def fill_missing_values(features):
 
     return features
 
-def sample_customers(X, target, groups, frac=0.1):
+def sample_customers(X, groups, frac=0.1):
     kfold = GroupKFold(n_splits=int(1/frac))
-    train_index, val_index = list(kfold.split(X=X, groups=groups))[0]
-    sample_X = X.iloc[val_index]
-    sample_targets = target.iloc[val_index]
-    return sample_X, sample_targets, val_index
+    other_index, frac_index = list(kfold.split(X=X, groups=groups))[0]
+    # sample_X = X.iloc[val_index]
+    # sample_targets = target.iloc[val_index]
+    return frac_index, other_index
 
 def get_purchase_info():
     purchases = pd.read_csv("data/purchases.txt")
     purchases = purchases[purchases['date'] < '2016-12-31T23:59:59'] # consider only dates before january
-    print(purchases.shape)
+    # print(purchases.shape)
 
     # remove customer-product pairs in test dataframe
     test_df = pd.read_csv("data/labels_predict.txt")
-    print(test_df.shape)
+    # print(test_df.shape)
     purchases['customer_product'] = purchases['customerId'].astype(str) + '_' + purchases['productId'].astype(str)
     test_df['customer_product'] = test_df['customerId'].astype(str) + '_' + test_df['productId'].astype(str)
 
@@ -90,11 +92,11 @@ def get_purchase_info():
     
     filtered_purchases['customerPurchaseCount'] = 1 # add a column to count
     customer_purchase_count = filtered_purchases.groupby('customerId').agg({'customerPurchaseCount':'sum'})
-    print(customer_purchase_count)
+    # print(customer_purchase_count)
 
     filtered_purchases['productPurchaseCount'] = 1 # add a column to count
     product_purchase_count = filtered_purchases.groupby('productId').agg({'productPurchaseCount':'sum'})
-    print(product_purchase_count)
+    # print(product_purchase_count)
     
     return customer_purchase_count, product_purchase_count
 
@@ -114,6 +116,7 @@ def process_date_col(col):
 def load_training_data(args):
     # load training pairs
     df = pd.read_csv("data/labels_training.txt")
+    print("Loaded training pairs ", df.shape)
 
     # load customer info
     customers = pd.read_csv("data/customers.txt")
@@ -135,20 +138,14 @@ def load_training_data(args):
 
     if args.use_customer_data:
         print("Using customers dataframe")
-        print(customers)
+        # print(customers)
         df = pd.merge(df, customers, left_on=['customerId'], right_on=['customerId'], how='left')
         
     if args.use_product_data:
         print("Using products dataframe")
-        print(products)
+        # print(products)
         df = pd.merge(df, products, left_on=['productId'], right_on=['productId'], how='left')
 
-    # # fill nan values
-    # if args.use_purchase_data:
-    #     df.customerPurchaseCount.fillna(0, inplace=True)
-    #     df.productPurchaseCount.fillna(0, inplace=True)
-
-    # add views info
     if args.use_views_data:
         print("Loading views info ...")
         views = pd.read_csv("data/views.txt")
@@ -156,43 +153,23 @@ def load_training_data(args):
         aggr_views = views.groupby(['customerId','productId']).sum() # aggregate the views of a customer of a product by summing
         df = pd.merge(df, aggr_views, right_index=True, left_on=['customerId', 'productId'])
 
-    print(df.shape)
-    if args.drop_nan:
-        print("Dropping all rows with nan")
-        df.dropna(inplace=True)
-        print(df.shape)
-    
-    frac = args.data_frac
-    if frac != 1.:
-        print(f"Sampling {frac} fraction of rows")
-        # df = df.sample(frac=frac) # sample randomly
-        df, _, sampled_inds = sample_customers(df, df['purchased'], df['customerId'], frac=frac) # sample by grouping customers
-        print(df.shape)
-
-    target = df['purchased'].astype(int)
-    customerId = df['customerId']
-    # productId = df['productId']
-    features = df.drop(columns=['purchased', 'customerId', 'productId'])
-
-    ## feature ablation ?
-    # cols_to_remove = []
-    # features = features.drop(columns=cols_to_remove)
-    return features, target, customerId
-
-def main(args):
-    print(args)
-
-    np.random.seed(args.seed)
-    
-    print("Loading data ...")
-    features, target, customerId = load_training_data(args)
+    # if args.drop_nan:
+    #     print("Dropping all rows with nan")
+    #     df.dropna(inplace=True)
+    #     print(df.shape)
 
     ## preprocessing features
     print("Filling missing values")
-    features = fill_missing_values(features)
+    df = fill_missing_values(df)
+    
+    purchased = df['purchased'].astype(int)
+    customerId = df['customerId']
+    # productId = df['productId']
+
+    df.drop(columns=['purchased', 'customerId', 'productId'], inplace=True)
 
     # encode categorical variables
-    columns = features.columns
+    columns = df.columns
     print(columns)
     cols_to_encode = ["country", "brand", "productType", "isFemale", "isPremier", "onSale"]
     cols_to_encode = [k for k in cols_to_encode if k in columns]
@@ -201,33 +178,70 @@ def main(args):
         remainder="passthrough",
     )
     print("Fitting column transformer on categorical variables")
-    column_trans.fit(features)
+    column_trans.fit(df)
+    print(df.shape)
+
+    # keep a separate validation set
+    print("Keeping a separate validation set ")
+    val_ind, train_ind = sample_customers(df, customerId, frac=0.1)
+    
+    return train_ind, val_ind, df, purchased, customerId, column_trans
+
+def main(args):
+    print(args)
+
+    np.random.seed(args.seed)
+    
+    print("Load and pre-process data ...")
+    train_ind, val_ind, df, purchased, customerId, column_trans = load_training_data(args)
+
+    val_df = df.iloc[val_ind]
+    val_target = purchased.iloc[val_ind]
+    val_features = column_trans.transform(val_df)
+
+    train_features = df.iloc[train_ind] # will be processed by column_trans later
+    train_target = purchased.iloc[train_ind]
+    train_customerId = customerId.iloc[train_ind]
+
+    frac = args.data_frac
+    if frac != 1.:
+        print(f"Sampling {frac} fraction of rows")
+        # train_features = train_features.sample(frac=frac) # sample randomly
+        frac_index, _ = sample_customers(train_features, train_customerId, frac=frac) # sample by grouping customers
+        train_features = train_features.iloc[frac_index]
+        train_target = train_target.iloc[frac_index]
+        train_customerId = train_customerId.iloc[frac_index]
+    
+    print(f"Train {len(train_target)}, val {len(val_target)}")
 
     # perform a cross-validation and get a validation score
     print("Starting cross-validation")
     kfold = GroupKFold(n_splits=args.nfolds)
 
-    aucs = []
-    for i, (train_index, val_index) in enumerate(kfold.split(X=features, groups=customerId)):
+    cv_val_aucs = []
+    cv_train_aucs = []
+    val_aucs = []
+    for i, (cv_train_index, cv_val_index) in enumerate(kfold.split(X=train_features, groups=train_customerId)):
         if i >= args.max_cv_runs:
             continue
         start = time()
 
+        print("==============================")
         # verify that no customer is common between train and val dataframes
-        unique_train_customers = customerId.iloc[train_index].unique()
-        unique_val_customers = customerId.iloc[val_index].unique()
+        unique_train_customers = train_customerId.iloc[cv_train_index].unique()
+        unique_val_customers = train_customerId.iloc[cv_val_index].unique()
         assert not len(set(unique_train_customers).intersection(set(unique_val_customers)))
 
-        train_features = column_trans.transform(features.iloc[train_index])
-        train_targets = target.iloc[train_index]
-        val_features = column_trans.transform(features.iloc[val_index])
-        val_targets = target.iloc[val_index]
+        cv_train_features = column_trans.transform(train_features.iloc[cv_train_index])
+        cv_train_targets = train_target.iloc[cv_train_index]
+        cv_val_features = column_trans.transform(train_features.iloc[cv_val_index])
+        cv_val_targets = train_target.iloc[cv_val_index]
 
+        # Creating model
         kwargs = {
             'random_state':args.seed,
             'verbose':args.verbose,
         }
-        
         if args.model == 'RandomForest':
             clf = RandomForestClassifier(n_estimators=args.n_estimators, random_state=args.seed, verbose=args.verbose)
         elif args.model == 'BoostedTree':
@@ -246,20 +260,27 @@ def main(args):
             raise ValueError(f"Unkown model {args.model}")
 
         print("Fitting model ... ")
-        clf.fit(train_features, train_targets)
+        clf.fit(cv_train_features, cv_train_targets)
+
         print("Predicting on train samples ...")
-        train_pred = clf.predict_proba(train_features)[:,1]
-        train_auc = roc_auc_score(train_targets, train_pred)
-        print(train_auc)
+        cv_train_pred = clf.predict_proba(cv_train_features)[:,1]
+        cv_train_auc = roc_auc_score(cv_train_targets, cv_train_pred)
+        cv_train_aucs.append(cv_train_auc)
+        print(f"mean {np.mean(cv_train_aucs):0.4f}, std {np.std(cv_train_aucs):0.4f} (cur: {cv_train_auc:0.4f})")
+
         print("Predicting on val samples ... ")
+        cv_val_pred = clf.predict_proba(cv_val_features)[:,1]
+        cv_val_auc = roc_auc_score(cv_val_targets, cv_val_pred)
+        cv_val_aucs.append(cv_val_auc)
+        print(f"mean {np.mean(cv_val_aucs):0.4f}, std {np.std(cv_val_aucs):0.4f} (cur: {cv_val_auc:0.4f})")
+
+        print("Predicting on main validation set ... ")
         val_pred = clf.predict_proba(val_features)[:,1]
-        val_auc = roc_auc_score(val_targets, val_pred)
-        print(val_auc)
-        aucs.append(val_auc)
-        print(f"[{i}/{args.nfolds}]Took {(time()-start):0.3f}s")
-        
-        val_mean, val_std = np.mean(aucs), np.std(aucs)
-        print(val_mean, val_std)
+        val_auc = roc_auc_score(val_target, val_pred)
+        val_aucs.append(val_auc)
+        print(f"mean {np.mean(val_aucs):0.4f}, std {np.std(val_aucs):0.4f} (cur: {val_auc:0.4f})")
+
+        print(f"[{i}/{args.nfolds}] Took {(time()-start):0.3f}s")
 
         # save model
         if args.outdir:
@@ -267,10 +288,16 @@ def main(args):
             filename = os.path.join(args.outdir, f'model_{i}.pkl')
             pickle.dump(clf, open(filename, 'wb'))
 
+        
     # predict purchasing probabilities on the test data and save the prediction file
     # test_df = pd.read_csv("data/labels_predict.txt")
 
-    return [np.mean(aucs), np.std(aucs)] # average cross validation score and filename of saved test results
+    out = {
+        'cv_train':np.mean(cv_train_aucs),
+        'cv_val':np.mean(cv_val_aucs),
+        'val':np.mean(val_aucs)
+    }
+    return out # average cross validation score and filename of saved test results
     
 def grid_search():
     args = parse_args()
@@ -308,8 +335,8 @@ def grid_search():
             print("====================")
             setattr(args_, param, val)
             
-            val_out = main(args_)
-            out[param][val] = val_out
+            x = main(args_)
+            out[param][val] = x['val'] # x['cv_val']
 
             with open(args.outdir+"out.json", "w") as f:
                 json.dump(out, f)
@@ -343,25 +370,16 @@ def data_ablation():
                     if str_ in out:
                         continue
                     args.outdir = "out/ablation/"+str_
-                    val_out = main(args)
-                    out[str_] = val_out
+                    x = main(args)
+                    out[str_] = x['val'] #x['cv_val']
 
                     with open(outfile, "w") as f:
                         json.dump(out, f)
 
 if __name__ == '__main__':
     args = parse_args()
-    # args.data_frac = 0.1
-    # args.drop_nan = 0
-    # args.max_cv_runs = 3
-    # args.max_depth = 3
-    # args.model = "BoostedTree"
-    # args.n_estimators = 100
-    # args.nfolds = 10
-    # args.seed = 7
-    # args.verbose = 2
+
     main(args)
-    # Namespace(data_frac=0.1, drop_nan=0, max_cv_runs=3, max_depth=3, model='BoostedTree', n_estimators=100, nfolds=10, seed=7, verbose=2)
 
     # grid_search()
     # data_ablation()
