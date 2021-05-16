@@ -8,16 +8,14 @@ import json
 from sklearn.model_selection import GroupKFold
 from sklearn.compose import make_column_transformer
 from sklearn.preprocessing import OneHotEncoder
-from sklearn.ensemble import RandomForestClassifier,GradientBoostingClassifier,AdaBoostClassifier
+from sklearn.ensemble import RandomForestClassifier,GradientBoostingClassifier,AdaBoostClassifier,BaggingClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-model", type=str, default="BoostedTree", 
-                            choices=['RandomForest', 'BoostedTree', 'AdaBoost', 'LogisticRegression', 'RandomForest_seippel'], 
-                            help="Model type to use")
+    parser.add_argument("-model", type=str, default="BoostedTree",  help="Model type to use")
     parser.add_argument("-nfolds", type=int, default=10, help="Number of cross validation folds")
     parser.add_argument("-max_cv_runs", type=int, default=-1, help="after how many cv folds to stop ? if -1 run all folds")
     parser.add_argument("-seed", type=int, default=7, help="Seed for controlling randomness")
@@ -25,7 +23,6 @@ def parse_args():
     parser.add_argument("-data_frac", type=float, default=1., help="fraction of data to use")
     parser.add_argument("-max_depth", type=int, default=3, help="Max depth for trees")
     parser.add_argument("-verbose", type=int, default=0, help="Verbosity")
-    parser.add_argument("-drop_nan", type=int, default=0, help="Drop rows with nan")
     parser.add_argument("-outdir", type=str, default="", help="output directory")
 
     parser.add_argument("-use_customer_data", type=int, default=1, help="Use customer data ?")
@@ -119,6 +116,25 @@ def load_training_data(args):
     df = pd.read_csv("data/labels_training.txt")
     print("Loaded training pairs ", df.shape)
 
+    # keep a separate validation set
+    print("Keeping a separate validation set ")
+    val_ind, train_ind = sample_customers(df, df['customerId'], frac=0.1)
+
+    if args.data_frac != 1.:
+        print("Keeping only a fraction of the training data ")
+        train_df = df.iloc[train_ind]
+        frac_ind, dropped_ind = sample_customers(train_df, train_df['customerId'], frac=args.data_frac)
+        train_ind = train_ind[frac_ind]
+        df = df.iloc[np.concatenate([train_ind, val_ind])]
+
+        train_ind = np.arange(train_ind.shape[0])
+        val_ind = np.arange(val_ind.shape[0])+train_ind.shape[0]
+        print(f"  Train {train_ind.shape[0]}, val {val_ind.shape[0]}")
+
+    purchased = df['purchased'].astype(int)
+    customerId = df['customerId']
+    # productId = df['productId']
+
     # load customer info
     customers = pd.read_csv("data/customers.txt")
 
@@ -154,19 +170,10 @@ def load_training_data(args):
         aggr_views = views.groupby(['customerId','productId']).sum() # aggregate the views of a customer of a product by summing
         df = pd.merge(df, aggr_views, right_index=True, left_on=['customerId', 'productId'])
 
-    # if args.drop_nan:
-    #     print("Dropping all rows with nan")
-    #     df.dropna(inplace=True)
-    #     print(df.shape)
-
     ## preprocessing features
     print("Filling missing values")
     df = fill_missing_values(df)
     
-    purchased = df['purchased'].astype(int)
-    customerId = df['customerId']
-    # productId = df['productId']
-
     df.drop(columns=['purchased', 'customerId', 'productId'], inplace=True)
 
     # encode categorical variables
@@ -182,10 +189,6 @@ def load_training_data(args):
     column_trans.fit(df)
     print(df.shape)
 
-    # keep a separate validation set
-    print("Keeping a separate validation set ")
-    val_ind, train_ind = sample_customers(df, customerId, frac=0.1)
-    
     return train_ind, val_ind, df, purchased, customerId, column_trans
 
 def main(args):
@@ -206,15 +209,6 @@ def main(args):
     train_target = purchased.iloc[train_ind]
     train_customerId = customerId.iloc[train_ind]
 
-    frac = args.data_frac
-    if frac != 1.:
-        print(f"Sampling {frac} fraction of rows")
-        # train_features = train_features.sample(frac=frac) # sample randomly
-        frac_index, _ = sample_customers(train_features, train_customerId, frac=frac) # sample by grouping customers
-        train_features = train_features.iloc[frac_index]
-        train_target = train_target.iloc[frac_index]
-        train_customerId = train_customerId.iloc[frac_index]
-    
     print(f"Train {len(train_target)}, val {len(val_target)}")
 
     # perform a cross-validation and get a validation score
@@ -257,13 +251,20 @@ def main(args):
             clf = GradientBoostingClassifier(**kwargs)
             print(clf.loss, clf.max_features, clf.n_estimators)
         elif args.model == 'AdaBoost':
-            clf = AdaBoostClassifier(n_estimators=args.n_estimators, random_state=args.seed, verbose=args.verbose)
-        elif args.model == 'RandomForest_seippel':
-            clf = RandomForestClassifier(n_estimators=400, random_state=args.seed, max_depth=200, verbose=2, min_samples_leaf=70, max_features=0.2)
+            clf = AdaBoostClassifier(n_estimators=args.n_estimators, random_state=args.seed)
         elif args.model == 'LogisticRegression': # TODO: use ensembling
             clf = LogisticRegression(random_state=args.seed, verbose=args.verbose)
         elif args.model == 'MLP':
-            clf = MLPClassifier(max_iter=300, **kwargs)
+            clf = MLPClassifier(max_iter=10, **kwargs)
+            clf = BaggingClassifier(clf, n_estimators=3)#10
+        # elif args.model == 'BaggedTrees':
+        #     max_samples = 1.0
+        #     clf = BaggingClassifier(base_estimator=None, n_estimators=args.n_estimators, max_samples=max_samples, max_features=1.0, bootstrap=True, bootstrap_features=False, oob_score=False, warm_start=False, n_jobs=4, random_state=7, verbose=2)
+        elif args.model == 'MLP2':
+            n_iter_no_change = 10#5 #10
+            tol = 0.0001#0.001 # 
+            clf = MLPClassifier(hidden_layer_sizes=100, activation='relu', solver='adam', alpha=0.0001, batch_size='auto', learning_rate='constant', learning_rate_init=0.001, power_t=0.5, max_iter=200, shuffle=True, random_state=None, tol=tol, verbose=2, warm_start=False, momentum=0.9, nesterovs_momentum=True, early_stopping=False, validation_fraction=0.1, beta_1=0.9, beta_2=0.999, epsilon=1e-08, n_iter_no_change=n_iter_no_change, max_fun=15000)
+            # clf = AdaBoostClassifier(base_estimator=clf, n_estimators=args.n_estimators, random_state=args.seed)
         else:
             raise ValueError(f"Unkown model {args.model}")
 
@@ -322,11 +323,21 @@ def run_random_forest():
     # args.max_depth = 200
 
     main(args)
-   
+
 def run_mlp():
     args = parse_args()
-    args.data_frac = 0.1
+    args.data_frac = 0.01#0.1
     args.model = "MLP"
+    args.verbose = 2
+    args.max_cv_runs = 3
+    args.nfolds = 10
+
+    main(args)
+
+def run_adaboost():
+    args = parse_args()
+    args.data_frac = 0.1
+    args.model = "AdaBoost"
     args.verbose = 2
     args.max_cv_runs = 3
     args.nfolds = 10
@@ -338,7 +349,6 @@ def grid_search():
     args.data_frac = 1.0#0.1
     args.model = "BoostedTree"
     args.verbose = 2
-    # args.drop_nan = 0
     args.max_cv_runs = 1#3
     args.nfolds = 10
     args.n_estimators = 100
@@ -380,7 +390,6 @@ def data_ablation():
     args.nfolds = 10
     args.max_cv_runs = 3
     args.data_frac = 0.1
-    args.drop_nan = 0
     args.verbose = 2
     
     out = {}
@@ -409,10 +418,11 @@ def data_ablation():
                         json.dump(out, f)
 
 if __name__ == '__main__':
-    # args = parse_args()
-    # main(args)
+    args = parse_args()
+    main(args)
 
-    grid_search()
+    # grid_search()
     # data_ablation()
     # run_random_forest()
     # run_mlp()
+    # run_adaboost()
