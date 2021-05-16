@@ -21,4 +21,4 @@
 # python main.py -data_frac=1.0 -n_estimators=100 -model=BoostedTree -verbose=2 -drop_nan=0 -max_cv_runs=3 -outdir=out/n100_frac1
 # python main.py -data_frac=1.0 -n_estimators=50 -model=BoostedTree -verbose=2 -drop_nan=0 -max_cv_runs=3 -outdir=out/n50_frac1
 # python main.py -data_frac=1.0 -n_estimators=200 -model=BoostedTree -verbose=2 -drop_nan=0 -max_cv_runs=3 -outdir=out/n200_frac1
-python main.py -data_frac=0.1 -n_estimators=10 -model=BoostedTree -verbose=2 -max_cv_runs=3
+# python main.py -data_frac=1.0 -n_estimators=10 -model=BoostedTree -verbose=2 -max_cv_runs=1

@@ -9,6 +9,7 @@ from sklearn.model_selection import GroupKFold
 from sklearn.compose import make_column_transformer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.ensemble import RandomForestClassifier,GradientBoostingClassifier,AdaBoostClassifier
+from sklearn.neural_network import MLPClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
@@ -188,6 +189,8 @@ def load_training_data(args):
     return train_ind, val_ind, df, purchased, customerId, column_trans
 
 def main(args):
+    print("=================================")
+    print("=================================")
     print(args)
 
     np.random.seed(args.seed)
@@ -243,7 +246,10 @@ def main(args):
             'verbose':args.verbose,
         }
         if args.model == 'RandomForest':
-            clf = RandomForestClassifier(n_estimators=args.n_estimators, random_state=args.seed, verbose=args.verbose)
+            for k in ['max_depth', 'n_estimators', 'loss', 'learning_rate', 'criterion', 'max_features', 'min_samples_split', 'subsample']:
+                if k in args:
+                    kwargs[k] = getattr(args, k)
+            clf = RandomForestClassifier(n_jobs=8, **kwargs)
         elif args.model == 'BoostedTree':
             for k in ['max_depth', 'n_estimators', 'loss', 'learning_rate', 'criterion', 'max_features', 'min_samples_split', 'subsample']:
                 if k in args:
@@ -256,6 +262,8 @@ def main(args):
             clf = RandomForestClassifier(n_estimators=400, random_state=args.seed, max_depth=200, verbose=2, min_samples_leaf=70, max_features=0.2)
         elif args.model == 'LogisticRegression': # TODO: use ensembling
             clf = LogisticRegression(random_state=args.seed, verbose=args.verbose)
+        elif args.model == 'MLP':
+            clf = MLPClassifier(max_iter=300, **kwargs)
         else:
             raise ValueError(f"Unkown model {args.model}")
 
@@ -266,19 +274,19 @@ def main(args):
         cv_train_pred = clf.predict_proba(cv_train_features)[:,1]
         cv_train_auc = roc_auc_score(cv_train_targets, cv_train_pred)
         cv_train_aucs.append(cv_train_auc)
-        print(f"mean {np.mean(cv_train_aucs):0.4f}, std {np.std(cv_train_aucs):0.4f} (cur: {cv_train_auc:0.4f})")
+        print(f"==> {np.mean(cv_train_aucs):0.4f}±{np.std(cv_train_aucs):0.4f} (cur: {cv_train_auc:0.4f})")
 
         print("Predicting on val samples ... ")
         cv_val_pred = clf.predict_proba(cv_val_features)[:,1]
         cv_val_auc = roc_auc_score(cv_val_targets, cv_val_pred)
         cv_val_aucs.append(cv_val_auc)
-        print(f"mean {np.mean(cv_val_aucs):0.4f}, std {np.std(cv_val_aucs):0.4f} (cur: {cv_val_auc:0.4f})")
+        print(f"==> {np.mean(cv_val_aucs):0.4f}±{np.std(cv_val_aucs):0.4f} (cur: {cv_val_auc:0.4f})")
 
         print("Predicting on main validation set ... ")
         val_pred = clf.predict_proba(val_features)[:,1]
         val_auc = roc_auc_score(val_target, val_pred)
         val_aucs.append(val_auc)
-        print(f"mean {np.mean(val_aucs):0.4f}, std {np.std(val_aucs):0.4f} (cur: {val_auc:0.4f})")
+        print(f"==> {np.mean(val_aucs):0.4f}±{np.std(val_aucs):0.4f} (cur: {val_auc:0.4f})")
 
         print(f"[{i}/{args.nfolds}] Took {(time()-start):0.3f}s")
 
@@ -299,30 +307,56 @@ def main(args):
     }
     return out # average cross validation score and filename of saved test results
     
-def grid_search():
+def run_random_forest():
     args = parse_args()
     args.data_frac = 0.1
-    args.model = "BoostedTree"
+    args.model = "RandomForest"
     args.verbose = 2
-    args.drop_nan = 0
     args.max_cv_runs = 3
     args.nfolds = 10
     args.n_estimators = 100
-    # args.outdir = "out/nestimators/"
-    args.outdir = "out/min_samples_split/"
+    # args.min_samples_split = 5
+    # args.max_depth = 10 # 50 huge overfitting
+    # args.max_features = 0.2
+    # args.min_samples_leaf = 70
+    # args.max_depth = 200
+
+    main(args)
+   
+def run_mlp():
+    args = parse_args()
+    args.data_frac = 0.1
+    args.model = "MLP"
+    args.verbose = 2
+    args.max_cv_runs = 3
+    args.nfolds = 10
+
+    main(args)
+
+def grid_search():
+    args = parse_args()
+    args.data_frac = 1.0#0.1
+    args.model = "BoostedTree"
+    args.verbose = 2
+    # args.drop_nan = 0
+    args.max_cv_runs = 1#3
+    args.nfolds = 10
+    args.n_estimators = 100
+    args.outdir = "out/nestimators/"; param_ranges = {"n_estimators":[200, 300]} #10, 50, 100, 
+    
     if not os.path.exists(args.outdir):
         os.makedirs(args.outdir)
 
-    param_ranges = {
+    # param_ranges = {
         # "loss":["exponential"],#["deviance", "exponential"],
-        # "n_estimators":[200, 300],#[100, 50, 200, 400],50, 100, 250, 500
+        # "n_estimators":[10, 50, 100, 200, 300],#[100, 50, 200, 400],50, 100, 250, 500
         # "learning_rate":[0.1],#[0.1, 0.05, 0.2],
         # "subsample":[1.0],#, 0.5],
         # "criterion":['friedman_mse'],#, "mse"],
         # "max_depth":[3],#, 5, 10, 50
-        "min_samples_split":[10, 100], # 2
+        # "min_samples_split":[10, 100], # 2
         # "max_features":['auto', 'sqrt', 'log2'],
-    }
+    # }
     default_d = dict([(k,v[0]) for k,v in param_ranges.items()])
     
     out = {}
@@ -332,9 +366,7 @@ def grid_search():
         args_ = argparse.Namespace(**args_d)
         out[param] = {}
         for val in values:
-            print("====================")
             setattr(args_, param, val)
-            
             x = main(args_)
             out[param][val] = x['val'] # x['cv_val']
 
@@ -377,9 +409,10 @@ def data_ablation():
                         json.dump(out, f)
 
 if __name__ == '__main__':
-    args = parse_args()
+    # args = parse_args()
+    # main(args)
 
-    main(args)
-
-    # grid_search()
+    grid_search()
     # data_ablation()
+    # run_random_forest()
+    # run_mlp()
