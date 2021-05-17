@@ -4,12 +4,14 @@ import os
 from time import time
 import pandas as pd
 import numpy as np
+from itertools import product
 import json
 from sklearn.model_selection import GroupKFold
 from sklearn.compose import make_column_transformer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.ensemble import RandomForestClassifier,GradientBoostingClassifier,AdaBoostClassifier,BaggingClassifier
 from sklearn.neural_network import MLPClassifier
+from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
@@ -29,6 +31,8 @@ def parse_args():
     parser.add_argument("-use_product_data", type=int, default=1, help="Use product data ?")
     parser.add_argument("-use_views_data", type=int, default=1, help="Use views data ?")
     parser.add_argument("-use_purchase_data", type=int, default=1, help="Use purchase data ?")
+
+    parser.add_argument("-max_iter", type=int, default=100, help="Max iter for logistic regression")
     
     args = parser.parse_args()
     if args.max_cv_runs <=0:
@@ -173,7 +177,7 @@ def load_training_data(args):
     ## preprocessing features
     print("Filling missing values")
     df = fill_missing_values(df)
-    
+
     df.drop(columns=['purchased', 'customerId', 'productId'], inplace=True)
 
     # encode categorical variables
@@ -239,32 +243,30 @@ def main(args):
             'random_state':args.seed,
             'verbose':args.verbose,
         }
-        if args.model == 'RandomForest':
-            for k in ['max_depth', 'n_estimators', 'loss', 'learning_rate', 'criterion', 'max_features', 'min_samples_split', 'subsample']:
-                if k in args:
-                    kwargs[k] = getattr(args, k)
-            clf = RandomForestClassifier(n_jobs=8, **kwargs)
-        elif args.model == 'BoostedTree':
+        if args.model == 'BoostedTree':
             for k in ['max_depth', 'n_estimators', 'loss', 'learning_rate', 'criterion', 'max_features', 'min_samples_split', 'subsample']:
                 if k in args:
                     kwargs[k] = getattr(args, k)
             clf = GradientBoostingClassifier(**kwargs)
             print(clf.loss, clf.max_features, clf.n_estimators)
+        elif args.model == 'RandomForest':
+            for k in ['max_depth', 'n_estimators', 'loss', 'learning_rate', 'criterion', 'max_features', 'min_samples_split', 'subsample']:
+                if k in args:
+                    kwargs[k] = getattr(args, k)
+            clf = RandomForestClassifier(n_jobs=8, **kwargs)
         elif args.model == 'AdaBoost':
             clf = AdaBoostClassifier(n_estimators=args.n_estimators, random_state=args.seed)
-        elif args.model == 'LogisticRegression': # TODO: use ensembling
-            clf = LogisticRegression(random_state=args.seed, verbose=args.verbose)
+        elif args.model == 'LogisticRegression':
+            max_iter = args.max_iter if args.max_iter != -1 else 100
+            clf = LogisticRegression(random_state=args.seed, verbose=args.verbose, max_iter=max_iter, solver='sag')
+            # clf = AdaBoostClassifier(clf, random_state=args.seed, n_estimators=args.n_estimators)
+            clf = BaggingClassifier(clf, n_estimators=args.n_estimators, n_jobs=8, verbose=2)
+        elif args.model == 'SVM':
+            clf = SVC(probability=True, random_state=args.seed, verbose=2)
+            # clf = AdaBoostClassifier(clf, random_state=args.seed, n_estimators=args.n_estimators)
+            # clf = BaggingClassifier(clf, n_estimators=args.n_estimators, n_jobs=8, verbose=2)
         elif args.model == 'MLP':
-            clf = MLPClassifier(max_iter=10, **kwargs)
-            clf = BaggingClassifier(clf, n_estimators=3)#10
-        # elif args.model == 'BaggedTrees':
-        #     max_samples = 1.0
-        #     clf = BaggingClassifier(base_estimator=None, n_estimators=args.n_estimators, max_samples=max_samples, max_features=1.0, bootstrap=True, bootstrap_features=False, oob_score=False, warm_start=False, n_jobs=4, random_state=7, verbose=2)
-        elif args.model == 'MLP2':
-            n_iter_no_change = 10#5 #10
-            tol = 0.0001#0.001 # 
-            clf = MLPClassifier(hidden_layer_sizes=100, activation='relu', solver='adam', alpha=0.0001, batch_size='auto', learning_rate='constant', learning_rate_init=0.001, power_t=0.5, max_iter=200, shuffle=True, random_state=None, tol=tol, verbose=2, warm_start=False, momentum=0.9, nesterovs_momentum=True, early_stopping=False, validation_fraction=0.1, beta_1=0.9, beta_2=0.999, epsilon=1e-08, n_iter_no_change=n_iter_no_change, max_fun=15000)
-            # clf = AdaBoostClassifier(base_estimator=clf, n_estimators=args.n_estimators, random_state=args.seed)
+            clf = MLPClassifier(hidden_layer_sizes=100, activation='relu', solver='adam', alpha=0.0001, batch_size='auto', learning_rate='constant', learning_rate_init=0.001, power_t=0.5, max_iter=200, shuffle=True, random_state=None, tol=0.0001, verbose=2, warm_start=False, momentum=0.9, nesterovs_momentum=True, early_stopping=False, validation_fraction=0.1, beta_1=0.9, beta_2=0.999, epsilon=1e-08, n_iter_no_change=10, max_fun=15000)
         else:
             raise ValueError(f"Unkown model {args.model}")
 
@@ -344,21 +346,43 @@ def run_adaboost():
 
     main(args)
 
+# def run_boosted_trees():
+#     args = parse_args()
+#     args.data_frac = 0.1
+#     args.model = "BoostedTree"
+#     args.learning_rate = 0.2
+#     args.n_estimators = 200
+#     args.loss = "exponential"
+#     args.verbose = 2
+#     args.max_cv_runs = 1#3
+#     args.nfolds = 10
+
 def grid_search():
     args = parse_args()
-    args.data_frac = 1.0#0.1
-    args.model = "BoostedTree"
+    args.data_frac = 1.0#0.1#1.0#
     args.verbose = 2
     args.max_cv_runs = 1#3
     args.nfolds = 10
-    args.n_estimators = 100
-    args.outdir = "out/nestimators/"; param_ranges = {"n_estimators":[200, 300]} #10, 50, 100, 
-    
+
+    args.model = "BoostedTree"
+    # boosted tree
+    args.n_estimators = 200
+    args.loss = "exponential"
+    args.learning_rate = 0.2
+    args.outdir = "out/nestimators_lr_loss_frac01/"; 
+    param_ranges = {
+        "n_estimators":[200,],
+        # "subsample":[1.0, 0.9, 0.7, 0.5],
+        # "max_depth":[2, 3, 5,],#, 5, 10, 50
+        # "criterion":['friedman_mse'],#, "mse"],
+        # "min_samples_split":[10, 100], # 2
+    }
+    print(param_ranges)
     if not os.path.exists(args.outdir):
         os.makedirs(args.outdir)
 
     # param_ranges = {
-        # "loss":["exponential"],#["deviance", "exponential"],
+        # "loss":["deviance"],#["deviance", "exponential"],
         # "n_estimators":[10, 50, 100, 200, 300],#[100, 50, 200, 400],50, 100, 250, 500
         # "learning_rate":[0.1],#[0.1, 0.05, 0.2],
         # "subsample":[1.0],#, 0.5],
@@ -367,21 +391,23 @@ def grid_search():
         # "min_samples_split":[10, 100], # 2
         # "max_features":['auto', 'sqrt', 'log2'],
     # }
-    default_d = dict([(k,v[0]) for k,v in param_ranges.items()])
-    
-    out = {}
-    for param, values in param_ranges.items():
-        args_d = vars(args)
-        args_d.update(default_d)
-        args_ = argparse.Namespace(**args_d)
-        out[param] = {}
-        for val in values:
-            setattr(args_, param, val)
-            x = main(args_)
-            out[param][val] = x['val'] # x['cv_val']
+    # default_d = dict([(k,v[0]) for k,v in param_ranges.items()])
 
-            with open(args.outdir+"out.json", "w") as f:
-                json.dump(out, f)
+    out = {}
+    keys = param_ranges.keys()
+    for x in product(*param_ranges.values()):
+        print(" --> ", x)
+        args_d = vars(args)
+        d = dict(zip(keys, x))
+        args_d.update(d)
+        args_ = argparse.Namespace(**args_d)
+
+        res = main(args_)
+        s = "_".join([f"{k}:{v}" for (k,v) in d.items()])
+        out[s] = res['val'] # x['cv_val']
+
+        with open(args.outdir+"out.json", "w") as f:
+            json.dump(out, f)
 
 def data_ablation():
     args = parse_args()
@@ -418,10 +444,10 @@ def data_ablation():
                         json.dump(out, f)
 
 if __name__ == '__main__':
-    args = parse_args()
-    main(args)
+    # args = parse_args()
+    # main(args)
 
-    # grid_search()
+    grid_search()
     # data_ablation()
     # run_random_forest()
     # run_mlp()
