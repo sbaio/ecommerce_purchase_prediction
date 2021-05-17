@@ -258,8 +258,9 @@ def create_model(args, columns=None):
         nest = args.n_estimators # 100
         lr = args.learning_rate # 0.1
         bt = args.boosting_type # gbdt
-        subsample = args.subsample # 1.0
-        clf = LGBMClassifier(boosting_type=bt, num_leaves=31, max_depth=-1, learning_rate=lr, n_estimators=nest, subsample_for_bin=200000, objective=None, class_weight=None, min_split_gain=0.0, min_child_weight=0.001, min_child_samples=20, subsample=1.0, subsample_freq=0, colsample_bytree=1.0, reg_alpha=0.0, reg_lambda=0.0, random_state=None, n_jobs=-1, silent=True, importance_type='split')
+        # subsample = args.subsample if hasattr(args, 'subsample') else 1.0
+        num_leaves = args.num_leaves if hasattr(args, 'num_leaves') else 31
+        clf = LGBMClassifier(boosting_type=bt, num_leaves=num_leaves, max_depth=-1, learning_rate=lr, n_estimators=nest, subsample_for_bin=200000, objective=None, class_weight=None, min_split_gain=0.0, min_child_weight=0.001, min_child_samples=20, subsample=1.0, subsample_freq=0, colsample_bytree=1.0, reg_alpha=0.0, reg_lambda=0.0, random_state=None, n_jobs=-1, silent=True, importance_type='split')
     else:
         raise ValueError(f"Unkown model {args.model}")
 
@@ -447,12 +448,12 @@ def grid_search(args):
 
     args.outdir = "out/lightgbm/"; 
     param_ranges = {
-        "subsample":[1, 0.9, 0.75, 0.5],
-        "n_estimators":[100, 200, 300, 400],
-        "learning_rate":[0.2, 0.1, 0.05],
-        # "data_frac":[1.0, 0.1],
-
-        # "max_depth":[2, 3, 5,],#, 5, 10, 50
+        "data_frac":[1.0],#, 0.1
+        "learning_rate":[0.1, 0.2,],#[0.2, 0.1, 0.05],
+        "num_leaves":[300, 200, 100],#[50, 100, 150, 200],#10, 20, 31, 50, 100
+        "n_estimators":[200, 300, 100],#[100, 200, 300, 400],100,200,
+        # "max_depth":[-1],#, 5, 10, 5010, 2, -1
+        # "subsample":[1.0, 0.9, 0.75, 0.5],
         # "criterion":['friedman_mse'],#, "mse"],
         # "min_samples_split":[10, 100], # 2
     }
@@ -463,14 +464,16 @@ def grid_search(args):
     out = {}
     keys = param_ranges.keys()
     for x in product(*param_ranges.values()):
-        print(" --> ", x)
         args_d = vars(args)
         d = dict(zip(keys, x))
         args_d.update(d)
         args_ = argparse.Namespace(**args_d)
 
-        res = train(args_)#_cv
         s = "_".join([f"{k}:{v}" for (k,v) in d.items()])
+        print(" --> ", s)
+
+        res = train_cv(args_)#_cv
+        
         out[s] = res['val'] # x['cv_val']
 
         with open(args.outdir+"out.json", "w") as f:
