@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# pip install pandas scikit-learn numpy
+# pip install pandas scikit-learn numpy lightgbm
 
 # python main.py -data_frac=0.1 -model=BoostedTree -drop_nan=1# 0.816+-0.007
 # python main.py -data_frac=0.1 -model=AdaBoost -drop_nan=1# 0.815+-0.006

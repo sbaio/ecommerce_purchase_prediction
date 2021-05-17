@@ -39,7 +39,7 @@ def parse_args():
     parser.add_argument("-learning_rate", type=float, default=0.1, help="learning rate")
     parser.add_argument("-boosting_type", type=str, default="gbdt",  help="Type of boosting gbdt, dart, goss, rf")
     
-    
+    parser.add_argument("-cv", type=int, default=1, help="perform cross validation or just train and validate on held out set")
     
     args = parser.parse_args()
     if args.max_cv_runs <=0:
@@ -122,15 +122,45 @@ def process_date_col(col):
         'dayname':date.dt.day_name(), # categorical 7
     })
 
-def load_training_data(args, fit_col_trans=True, use_cache=True):
+def fit_column_transformer(df):
+    # encode categorical variables
+    columns = df.columns
+    print(columns)
+    cols_to_encode = ["country", "brand", "productType", "isFemale", "isPremier", "onSale"]
+    cols_to_encode = [k for k in cols_to_encode if k in columns]
+    column_trans = make_column_transformer(
+        (OneHotEncoder(), cols_to_encode),
+        remainder="passthrough",
+    )
+    print("Fitting column transformer on categorical variables")
+    column_trans.fit(df)
+    return column_trans
+
+def load_training_data(args, use_cache=True):
     # rename to data/cache_frac_10.pkl
     s = str(args.data_frac).replace('.','')
     cache_file=f"data/cache_frac_{s}.pkl"
     if use_cache and os.path.exists(cache_file):
         print("Loading from cache ...")
         d = pickle.load(open(cache_file, "rb"))
-        return d['train_ind'], d['val_ind'], d['df'], d['purchased'], d['customerId'], d['column_trans']
         
+        # remove columns not needed
+        df = d['df']
+        column_trans = d['column_trans']
+        if not args.use_purchase_data:
+            df.drop(columns=['customerPurchaseCount', 'productPurchaseCount'], inplace=True)
+        if not args.use_customer_data:
+            df.drop(columns=['isFemale', 'country', 'yearOfBirth', 'isPremier'], inplace=True)
+        if not args.use_product_data:
+            df.drop(columns=['brand', 'price', 'productType', 'onSale'], inplace=True)
+        if not args.use_views_data:
+            df.drop(columns=['viewOnly', 'changeThumbnail', 'viewCatwalk', 'view360', 'sizeGuide'], inplace=True)
+
+        if not (args.use_purchase_data and args.use_customer_data and args.use_product_data and args.use_views_data):
+            column_trans = fit_column_transformer(df)
+
+        return d['train_ind'], d['val_ind'], df, d['purchased'], d['customerId'], column_trans
+    
     # load training pairs
     df = pd.read_csv("data/labels_training.txt")
     print("Loaded training pairs ", df.shape)
@@ -195,23 +225,11 @@ def load_training_data(args, fit_col_trans=True, use_cache=True):
 
     df.drop(columns=['purchased', 'customerId', 'productId'], inplace=True)
 
-    # encode categorical variables
-    if fit_col_trans:
-        columns = df.columns
-        print(columns)
-        cols_to_encode = ["country", "brand", "productType", "isFemale", "isPremier", "onSale"]
-        cols_to_encode = [k for k in cols_to_encode if k in columns]
-        column_trans = make_column_transformer(
-            (OneHotEncoder(), cols_to_encode),
-            remainder="passthrough",
-        )
-        print("Fitting column transformer on categorical variables")
-        column_trans.fit(df)
-    else:
-        column_trans = None
+    column_trans = fit_column_transformer(df)
     print(df.shape)
 
-    if cache_file:
+    save = args.use_purchase_data and args.use_customer_data and args.use_product_data and args.use_views_data
+    if save:
         # save cache
         d = {
             'train_ind':train_ind,
@@ -224,7 +242,10 @@ def load_training_data(args, fit_col_trans=True, use_cache=True):
         pickle.dump(d, open(cache_file,"wb"))
     return train_ind, val_ind, df, purchased, customerId, column_trans
 
-def create_model(args, columns=None):
+def load_test_data():
+    1
+
+def create_model(args):
     # Creating model
     kwargs = {
         'random_state':args.seed,
@@ -235,7 +256,6 @@ def create_model(args, columns=None):
             if k in args:
                 kwargs[k] = getattr(args, k)
         clf = GradientBoostingClassifier(**kwargs)
-        print(clf.loss, clf.max_features, clf.n_estimators)
     elif args.model == 'RandomForest':
         for k in ['max_depth', 'n_estimators', 'loss', 'learning_rate', 'criterion', 'max_features', 'min_samples_split', 'subsample']:
             if k in args:
@@ -273,8 +293,8 @@ def train(args):
     np.random.seed(args.seed)
     
     print("Load and pre-process data ...")
-    train_ind, val_ind, df, purchased, _, column_trans = load_training_data(args, fit_col_trans=True)
-
+    train_ind, val_ind, df, purchased, _, column_trans = load_training_data(args)
+    
     val_df = df.iloc[val_ind]
     val_targets = purchased.iloc[val_ind]
 
@@ -317,7 +337,7 @@ def train(args):
     # predict on test data
     print("=================================")
     return {'val': val_auc}
-        
+
 def train_cv(args):
     """
     Train using a GroupKFold cross-validation
@@ -435,33 +455,24 @@ def run_adaboost(args):
     train_cv(args)
 
 def grid_search(args):
-    # args.data_frac = 1.0#0.1#1.0#
-    # args.verbose = 2
-    # args.max_cv_runs = -1
-    # args.nfolds = 5
-
-    # boosted tree
-    # args.model = "BoostedTree"
-    # args.n_estimators = 200
-    # args.loss = "exponential"
-    # args.learning_rate = 0.2
-
     args.outdir = "out/lightgbm/"; 
     param_ranges = {
-        "data_frac":[1.0],#, 0.1
-        "learning_rate":[0.1, 0.2,],#[0.2, 0.1, 0.05],
-        "num_leaves":[300, 200, 100],#[50, 100, 150, 200],#10, 20, 31, 50, 100
-        "n_estimators":[200, 300, 100],#[100, 200, 300, 400],100,200,
-        # "max_depth":[-1],#, 5, 10, 5010, 2, -1
-        # "subsample":[1.0, 0.9, 0.75, 0.5],
-        # "criterion":['friedman_mse'],#, "mse"],
-        # "min_samples_split":[10, 100], # 2
+        # "data_frac":[1.0],#,  1.0
+        # "learning_rate":[0.1],#[0.2, 0.1, 0.05],
+        # "num_leaves":[200, 300],#[100],#[31,50],#[50, 100, 150, 200],
+        # "n_estimators":[31, 50],#[100]#[100, 200, 300, ],
+        'n_estimators':[100],
+        "use_views_data":[1, 0],
+        "use_product_data":[1, 0],
+        "use_purchase_data":[1, 0],
+        "use_customer_data":[1, 0],
     }
     print(param_ranges)
     if not os.path.exists(args.outdir):
         os.makedirs(args.outdir)
 
     out = {}
+    fct = train_cv if args.cv else train
     keys = param_ranges.keys()
     for x in product(*param_ranges.values()):
         args_d = vars(args)
@@ -472,7 +483,7 @@ def grid_search(args):
         s = "_".join([f"{k}:{v}" for (k,v) in d.items()])
         print(" --> ", s)
 
-        res = train_cv(args_)#_cv
+        res = fct(args_)
         
         out[s] = res['val'] # x['cv_val']
 
