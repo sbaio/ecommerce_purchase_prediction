@@ -14,6 +14,7 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from lightgbm import LGBMClassifier
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -33,6 +34,12 @@ def parse_args():
     parser.add_argument("-use_purchase_data", type=int, default=1, help="Use purchase data ?")
 
     parser.add_argument("-max_iter", type=int, default=100, help="Max iter for logistic regression")
+
+    # lightgbm params
+    parser.add_argument("-learning_rate", type=float, default=0.1, help="learning rate")
+    parser.add_argument("-boosting_type", type=str, default="gbdt",  help="Type of boosting gbdt, dart, goss, rf")
+    
+    
     
     args = parser.parse_args()
     if args.max_cv_runs <=0:
@@ -115,7 +122,15 @@ def process_date_col(col):
         'dayname':date.dt.day_name(), # categorical 7
     })
 
-def load_training_data(args):
+def load_training_data(args, fit_col_trans=True, use_cache=True):
+    # rename to data/cache_frac_10.pkl
+    s = str(args.data_frac).replace('.','')
+    cache_file=f"data/cache_frac_{s}.pkl"
+    if use_cache and os.path.exists(cache_file):
+        print("Loading from cache ...")
+        d = pickle.load(open(cache_file, "rb"))
+        return d['train_ind'], d['val_ind'], d['df'], d['purchased'], d['customerId'], d['column_trans']
+        
     # load training pairs
     df = pd.read_csv("data/labels_training.txt")
     print("Loaded training pairs ", df.shape)
@@ -181,25 +196,135 @@ def load_training_data(args):
     df.drop(columns=['purchased', 'customerId', 'productId'], inplace=True)
 
     # encode categorical variables
-    columns = df.columns
-    print(columns)
-    cols_to_encode = ["country", "brand", "productType", "isFemale", "isPremier", "onSale"]
-    cols_to_encode = [k for k in cols_to_encode if k in columns]
-    column_trans = make_column_transformer(
-        (OneHotEncoder(), cols_to_encode),
-        remainder="passthrough",
-    )
-    print("Fitting column transformer on categorical variables")
-    column_trans.fit(df)
+    if fit_col_trans:
+        columns = df.columns
+        print(columns)
+        cols_to_encode = ["country", "brand", "productType", "isFemale", "isPremier", "onSale"]
+        cols_to_encode = [k for k in cols_to_encode if k in columns]
+        column_trans = make_column_transformer(
+            (OneHotEncoder(), cols_to_encode),
+            remainder="passthrough",
+        )
+        print("Fitting column transformer on categorical variables")
+        column_trans.fit(df)
+    else:
+        column_trans = None
     print(df.shape)
 
+    if cache_file:
+        # save cache
+        d = {
+            'train_ind':train_ind,
+            'val_ind':val_ind,
+            'df':df,
+            'purchased':purchased,
+            'customerId':customerId,
+            'column_trans':column_trans,
+        }
+        pickle.dump(d, open(cache_file,"wb"))
     return train_ind, val_ind, df, purchased, customerId, column_trans
 
-def main(args):
-    print("=================================")
+def create_model(args, columns=None):
+    # Creating model
+    kwargs = {
+        'random_state':args.seed,
+        'verbose':args.verbose,
+    }
+    if args.model == 'BoostedTree':
+        for k in ['max_depth', 'n_estimators', 'loss', 'learning_rate', 'criterion', 'max_features', 'min_samples_split', 'subsample']:
+            if k in args:
+                kwargs[k] = getattr(args, k)
+        clf = GradientBoostingClassifier(**kwargs)
+        print(clf.loss, clf.max_features, clf.n_estimators)
+    elif args.model == 'RandomForest':
+        for k in ['max_depth', 'n_estimators', 'loss', 'learning_rate', 'criterion', 'max_features', 'min_samples_split', 'subsample']:
+            if k in args:
+                kwargs[k] = getattr(args, k)
+        clf = RandomForestClassifier(n_jobs=8, **kwargs)
+    elif args.model == 'AdaBoost':
+        clf = AdaBoostClassifier(n_estimators=args.n_estimators, random_state=args.seed)
+    elif args.model == 'LogisticRegression':
+        max_iter = args.max_iter if args.max_iter != -1 else 100
+        clf = LogisticRegression(random_state=args.seed, verbose=args.verbose, max_iter=max_iter, solver='sag')
+        # clf = AdaBoostClassifier(clf, random_state=args.seed, n_estimators=args.n_estimators)
+        clf = BaggingClassifier(clf, n_estimators=args.n_estimators, n_jobs=8, verbose=2)
+    elif args.model == 'SVM':
+        clf = SVC(probability=True, random_state=args.seed, verbose=2)
+        # clf = AdaBoostClassifier(clf, random_state=args.seed, n_estimators=args.n_estimators)
+        # clf = BaggingClassifier(clf, n_estimators=args.n_estimators, n_jobs=8, verbose=2)
+    elif args.model == 'MLP':
+        clf = MLPClassifier(hidden_layer_sizes=100, activation='relu', solver='adam', alpha=0.0001, batch_size='auto', learning_rate='constant', learning_rate_init=0.001, power_t=0.5, max_iter=200, shuffle=True, random_state=None, tol=0.0001, verbose=2, warm_start=False, momentum=0.9, nesterovs_momentum=True, early_stopping=False, validation_fraction=0.1, beta_1=0.9, beta_2=0.999, epsilon=1e-08, n_iter_no_change=10, max_fun=15000)
+    elif args.model == 'lightgbm':
+        nest = args.n_estimators # 100
+        lr = args.learning_rate # 0.1
+        bt = args.boosting_type # gbdt
+        subsample = args.subsample # 1.0
+        clf = LGBMClassifier(boosting_type=bt, num_leaves=31, max_depth=-1, learning_rate=lr, n_estimators=nest, subsample_for_bin=200000, objective=None, class_weight=None, min_split_gain=0.0, min_child_weight=0.001, min_child_samples=20, subsample=1.0, subsample_freq=0, colsample_bytree=1.0, reg_alpha=0.0, reg_lambda=0.0, random_state=None, n_jobs=-1, silent=True, importance_type='split')
+    else:
+        raise ValueError(f"Unkown model {args.model}")
+
+    return clf
+
+def train(args):
     print("=================================")
     print(args)
 
+    np.random.seed(args.seed)
+    
+    print("Load and pre-process data ...")
+    train_ind, val_ind, df, purchased, _, column_trans = load_training_data(args, fit_col_trans=True)
+
+    val_df = df.iloc[val_ind]
+    val_targets = purchased.iloc[val_ind]
+
+    train_df = df.iloc[train_ind]
+    train_targets = purchased.iloc[train_ind]
+    
+    if column_trans is not None:
+        train_features = column_trans.transform(train_df)
+        val_features = column_trans.transform(val_df)
+    else:
+        train_features = train_df
+        val_features = val_df
+    
+    print(f"Train {len(train_targets)}, val {len(val_targets)}")
+
+    start = time()
+
+    clf = create_model(args, columns=train_df.columns)
+    print("Fitting model ... ")
+    clf.fit(train_features, train_targets)
+
+    print("Predicting on train samples ...")
+    train_pred = clf.predict_proba(train_features)[:,1]
+    train_auc = roc_auc_score(train_targets, train_pred)
+    print(f"==> {train_auc}")
+
+    print("Predicting on main validation set ... ")
+    val_pred = clf.predict_proba(val_features)[:,1]
+    val_auc = roc_auc_score(val_targets, val_pred)
+    print(f"==> {val_auc}")
+
+    print(f"Took {time()-start:0.2f}")
+
+    # save model
+    # if args.outdir:
+    #     os.makedirs(args.outdir, exist_ok=True)
+    #     filename = os.path.join(args.outdir, f'model.pkl')
+    #     pickle.dump(clf, open(filename, 'wb'))
+
+    # predict on test data
+    print("=================================")
+    return {'val': val_auc}
+        
+def train_cv(args):
+    """
+    Train using a GroupKFold cross-validation
+    """
+    print("=================================")
+    print("=================================")
+    print(args)
+    
     np.random.seed(args.seed)
     
     print("Load and pre-process data ...")
@@ -238,37 +363,7 @@ def main(args):
         cv_val_features = column_trans.transform(train_features.iloc[cv_val_index])
         cv_val_targets = train_target.iloc[cv_val_index]
 
-        # Creating model
-        kwargs = {
-            'random_state':args.seed,
-            'verbose':args.verbose,
-        }
-        if args.model == 'BoostedTree':
-            for k in ['max_depth', 'n_estimators', 'loss', 'learning_rate', 'criterion', 'max_features', 'min_samples_split', 'subsample']:
-                if k in args:
-                    kwargs[k] = getattr(args, k)
-            clf = GradientBoostingClassifier(**kwargs)
-            print(clf.loss, clf.max_features, clf.n_estimators)
-        elif args.model == 'RandomForest':
-            for k in ['max_depth', 'n_estimators', 'loss', 'learning_rate', 'criterion', 'max_features', 'min_samples_split', 'subsample']:
-                if k in args:
-                    kwargs[k] = getattr(args, k)
-            clf = RandomForestClassifier(n_jobs=8, **kwargs)
-        elif args.model == 'AdaBoost':
-            clf = AdaBoostClassifier(n_estimators=args.n_estimators, random_state=args.seed)
-        elif args.model == 'LogisticRegression':
-            max_iter = args.max_iter if args.max_iter != -1 else 100
-            clf = LogisticRegression(random_state=args.seed, verbose=args.verbose, max_iter=max_iter, solver='sag')
-            # clf = AdaBoostClassifier(clf, random_state=args.seed, n_estimators=args.n_estimators)
-            clf = BaggingClassifier(clf, n_estimators=args.n_estimators, n_jobs=8, verbose=2)
-        elif args.model == 'SVM':
-            clf = SVC(probability=True, random_state=args.seed, verbose=2)
-            # clf = AdaBoostClassifier(clf, random_state=args.seed, n_estimators=args.n_estimators)
-            # clf = BaggingClassifier(clf, n_estimators=args.n_estimators, n_jobs=8, verbose=2)
-        elif args.model == 'MLP':
-            clf = MLPClassifier(hidden_layer_sizes=100, activation='relu', solver='adam', alpha=0.0001, batch_size='auto', learning_rate='constant', learning_rate_init=0.001, power_t=0.5, max_iter=200, shuffle=True, random_state=None, tol=0.0001, verbose=2, warm_start=False, momentum=0.9, nesterovs_momentum=True, early_stopping=False, validation_fraction=0.1, beta_1=0.9, beta_2=0.999, epsilon=1e-08, n_iter_no_change=10, max_fun=15000)
-        else:
-            raise ValueError(f"Unkown model {args.model}")
+        clf = create_model(args)
 
         print("Fitting model ... ")
         clf.fit(cv_train_features, cv_train_targets)
@@ -310,69 +405,53 @@ def main(args):
     }
     return out # average cross validation score and filename of saved test results
     
-def run_random_forest():
-    args = parse_args()
+def run_random_forest(args):
     args.data_frac = 0.1
     args.model = "RandomForest"
     args.verbose = 2
     args.max_cv_runs = 3
     args.nfolds = 10
     args.n_estimators = 100
-    # args.min_samples_split = 5
-    # args.max_depth = 10 # 50 huge overfitting
-    # args.max_features = 0.2
-    # args.min_samples_leaf = 70
-    # args.max_depth = 200
 
-    main(args)
+    train_cv(args)
 
-def run_mlp():
-    args = parse_args()
-    args.data_frac = 0.01#0.1
+def run_mlp(args):
+    args.data_frac = 0.1
     args.model = "MLP"
     args.verbose = 2
     args.max_cv_runs = 3
     args.nfolds = 10
 
-    main(args)
+    train_cv(args)
 
-def run_adaboost():
-    args = parse_args()
+def run_adaboost(args):
     args.data_frac = 0.1
     args.model = "AdaBoost"
     args.verbose = 2
     args.max_cv_runs = 3
     args.nfolds = 10
 
-    main(args)
+    train_cv(args)
 
-# def run_boosted_trees():
-#     args = parse_args()
-#     args.data_frac = 0.1
-#     args.model = "BoostedTree"
-#     args.learning_rate = 0.2
-#     args.n_estimators = 200
-#     args.loss = "exponential"
-#     args.verbose = 2
-#     args.max_cv_runs = 1#3
-#     args.nfolds = 10
+def grid_search(args):
+    # args.data_frac = 1.0#0.1#1.0#
+    # args.verbose = 2
+    # args.max_cv_runs = -1
+    # args.nfolds = 5
 
-def grid_search():
-    args = parse_args()
-    args.data_frac = 1.0#0.1#1.0#
-    args.verbose = 2
-    args.max_cv_runs = 1#3
-    args.nfolds = 10
-
-    args.model = "BoostedTree"
     # boosted tree
-    args.n_estimators = 200
-    args.loss = "exponential"
-    args.learning_rate = 0.2
-    args.outdir = "out/nestimators_lr_loss_frac01/"; 
+    # args.model = "BoostedTree"
+    # args.n_estimators = 200
+    # args.loss = "exponential"
+    # args.learning_rate = 0.2
+
+    args.outdir = "out/lightgbm/"; 
     param_ranges = {
-        "n_estimators":[200,],
-        # "subsample":[1.0, 0.9, 0.7, 0.5],
+        "subsample":[1, 0.9, 0.75, 0.5],
+        "n_estimators":[100, 200, 300, 400],
+        "learning_rate":[0.2, 0.1, 0.05],
+        # "data_frac":[1.0, 0.1],
+
         # "max_depth":[2, 3, 5,],#, 5, 10, 50
         # "criterion":['friedman_mse'],#, "mse"],
         # "min_samples_split":[10, 100], # 2
@@ -380,18 +459,6 @@ def grid_search():
     print(param_ranges)
     if not os.path.exists(args.outdir):
         os.makedirs(args.outdir)
-
-    # param_ranges = {
-        # "loss":["deviance"],#["deviance", "exponential"],
-        # "n_estimators":[10, 50, 100, 200, 300],#[100, 50, 200, 400],50, 100, 250, 500
-        # "learning_rate":[0.1],#[0.1, 0.05, 0.2],
-        # "subsample":[1.0],#, 0.5],
-        # "criterion":['friedman_mse'],#, "mse"],
-        # "max_depth":[3],#, 5, 10, 50
-        # "min_samples_split":[10, 100], # 2
-        # "max_features":['auto', 'sqrt', 'log2'],
-    # }
-    # default_d = dict([(k,v[0]) for k,v in param_ranges.items()])
 
     out = {}
     keys = param_ranges.keys()
@@ -402,15 +469,14 @@ def grid_search():
         args_d.update(d)
         args_ = argparse.Namespace(**args_d)
 
-        res = main(args_)
+        res = train(args_)#_cv
         s = "_".join([f"{k}:{v}" for (k,v) in d.items()])
         out[s] = res['val'] # x['cv_val']
 
         with open(args.outdir+"out.json", "w") as f:
             json.dump(out, f)
 
-def data_ablation():
-    args = parse_args()
+def data_ablation(args):
     args.n_estimators = 100
     args.model = "BoostedTree"
     args.nfolds = 10
@@ -437,18 +503,20 @@ def data_ablation():
                     if str_ in out:
                         continue
                     args.outdir = "out/ablation/"+str_
-                    x = main(args)
+                    x = train_cv(args)
                     out[str_] = x['val'] #x['cv_val']
 
                     with open(outfile, "w") as f:
                         json.dump(out, f)
 
 if __name__ == '__main__':
-    # args = parse_args()
-    # main(args)
+    args = parse_args()
 
-    grid_search()
-    # data_ablation()
-    # run_random_forest()
-    # run_mlp()
-    # run_adaboost()
+    # train_cv(args)
+    # train(args)
+    grid_search(args)
+    # data_ablation(args)
+    # run_random_forest(args)
+    # run_mlp(args)
+    # run_adaboost(args)
+    
