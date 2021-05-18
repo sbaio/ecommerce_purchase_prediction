@@ -251,26 +251,6 @@ def load_training_data(args, use_cache=True):
         pickle.dump(d, open(cache_file,"wb"))
     return train_ind, val_ind, df, purchased, customerId, column_trans
 
-def load_test_data(args, cache_file="data/test_features_cache.csv"):
-    
-    if not os.path.exists(cache_file):
-        # load testing pairs
-        df = pd.read_csv("data/labels_predict.txt")
-        print("Loaded testing pairs ", df.shape)
-
-        df = create_features_from_df(df, args)
-        
-        df.drop(columns=['purchase_probability', 'customerId', 'productId'], inplace=True)
-
-        df.to_csv(cache_file, index=False)
-    else:
-        df = pd.read_csv(cache_file)
-
-    # apply column transformer
-    # column_trans.set_params(onehotencoder__handle_unknown='ignore')
-
-    return df
-
 def create_model(args):
     # Creating model
     kwargs = {
@@ -516,47 +496,25 @@ def grid_search(args):
         with open(args.outdir+"out.json", "w") as f:
             json.dump(out, f)
 
-def data_ablation(args):
-    args.n_estimators = 100
-    args.model = "BoostedTree"
-    args.nfolds = 10
-    args.max_cv_runs = 3
-    args.data_frac = 0.1
-    args.verbose = 2
-    
-    out = {}
-    outfile = "out/ablation/out.json"
-    if os.path.exists(outfile):
-        with open(outfile, "r") as f:
-            out = json.load(f)
-
-    for use_views_data in [1, 0]:
-        args.use_views_data = use_views_data
-        for use_product_data in [1, 0]:
-            args.use_product_data = use_product_data
-            for use_purchase_data in [1, 0]:
-                args.use_purchase_data = use_purchase_data
-                for use_customer_data in [1, 0]:
-                    args.use_customer_data = use_customer_data
-                    str_ = f"views_{use_views_data}_product_{use_product_data}_purchase_{use_purchase_data}_customer_{use_customer_data}/"
-                    print(str_)
-                    if str_ in out:
-                        continue
-                    args.outdir = "out/ablation/"+str_
-                    x = train_cv(args)
-                    out[str_] = x['val'] #x['cv_val']
-
-                    with open(outfile, "w") as f:
-                        json.dump(out, f)
-
 if __name__ == '__main__':
     args = parse_args()
 
-    # train_cv(args)
+    train_cv(args)
     # train(args)
-    grid_search(args)
-    # data_ablation(args)
+    # grid_search(args)
     # run_random_forest(args)
     # run_mlp(args)
     # run_adaboost(args)
     
+
+
+        # if args.cv:
+        #     # perform cross validation
+        #     # X = df.iloc[train_ind]
+        #     # y = label.iloc[train_ind]
+        #     # groups = customerId.iloc[train_ind]
+        #     # kfold_cv = GroupKFold(n_splits=args.nfolds)
+        #     # folds = kfold_cv.split(X=X, groups=groups)
+        #     # scores = cross_val_score(clf, X, y, cv=kfold_cv, scoring="roc_auc", n_jobs=max(8,args.nfolds), verbose=2)
+        #     1
+        # else:

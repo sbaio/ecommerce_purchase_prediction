@@ -1,7 +1,6 @@
 import argparse
 import pickle
 import os
-from time import time
 import pandas as pd
 import numpy as np
 from itertools import product
@@ -10,14 +9,19 @@ import lightgbm as lgb
 from sklearn.model_selection import GroupKFold
 from sklearn.ensemble import RandomForestClassifier,GradientBoostingClassifier,AdaBoostClassifier,BaggingClassifier
 from sklearn.neural_network import MLPClassifier
-from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from sklearn.compose import make_column_transformer
+from sklearn.preprocessing import OneHotEncoder
 
-from util import process_date_col, sample_customers
+from util import *
 
 def parse_args():
     parser = argparse.ArgumentParser()
+
+    parser.add_argument("-cv", type=int, default=1, help="perform cross validation or just train and validate on held out set")
+    parser.add_argument("-test", type=int, default=0, help="Run inference on test")
+    parser.add_argument("-task", type=str, default="main",  help="Which fct to run ?")
 
     parser.add_argument("-use_customer_data", type=int, default=1, help="Use customer data ?")
     parser.add_argument("-use_product_data", type=int, default=1, help="Use product data ?")
@@ -28,7 +32,7 @@ def parse_args():
 
     parser.add_argument("-outdir", type=str, default="", help="output directory")
 
-    parser.add_argument("-model", type=str, default="BoostedTree",  help="Model type to use")
+    parser.add_argument("-model", type=str, default="light_gbdt",  help="Model type to use")
 
     parser.add_argument("-nfolds", type=int, default=5, help="Number of cross validation folds")
     parser.add_argument("-seed", type=int, default=7, help="Seed for controlling randomness")
@@ -36,21 +40,17 @@ def parse_args():
     parser.add_argument("-data_frac", type=float, default=1., help="fraction of data to use")
     parser.add_argument("-max_depth", type=int, default=3, help="Max depth for trees")
     parser.add_argument("-verbose", type=int, default=0, help="Verbosity")
-    
-    # parser.add_argument("-fill_nan", type=int, default=1, help="Fill NaNs")
-    # parser.add_argument("-max_iter", type=int, default=100, help="Max iter for logistic regression")
 
     # lightgbm params
     parser.add_argument("-n_estimators", type=int, default=100, help="nb estimators for random Forest and boosted Tree classifier")
     parser.add_argument("-num_leaves", type=int, default=31, help="Nb of leaves")
     parser.add_argument("-learning_rate", type=float, default=0.1, help="learning rate")
     parser.add_argument("-boosting_type", type=str, default="gbdt",  help="Type of boosting gbdt, dart, goss, rf")
-    
-    parser.add_argument("-cv", type=int, default=1, help="perform cross validation or just train and validate on held out set")
 
-    parser.add_argument("-test", type=int, default=0, help="Run test")
+    parser.add_argument("-data_dir", type=str, default="data/",  help="Folder containing customers.txt, products.txt, views.txt ...")
+    parser.add_argument("-cache_dir", type=str, default="/mnt/hdd/sbaio/asos/",  help="Folder to save cache files to make loading faster ...")
+
     
-    parser.add_argument("-task", type=str, default="main",  help="Which fct to run ?")
 
     args = parser.parse_args()
     if args.test:
@@ -60,11 +60,11 @@ def parse_args():
     return args
 
 def get_purchase_info():
-    purchases = pd.read_csv("data/purchases.txt")
+    purchases = pd.read_csv(args.data_dir+"purchases.txt")
     purchases = purchases[purchases['date'] < '2016-12-31T23:59:59'] # consider only dates before january
 
     # remove customer-product pairs in test dataframe
-    test_df = pd.read_csv("data/labels_predict.txt")
+    test_df = pd.read_csv(args.data_dir+"labels_predict.txt")
     purchases['customer_product'] = purchases['customerId'].astype(str) + '_' + purchases['productId'].astype(str)
     test_df['customer_product'] = test_df['customerId'].astype(str) + '_' + test_df['productId'].astype(str)
 
@@ -82,21 +82,14 @@ def get_purchase_info():
     return customer_purchase_count, product_purchase_count
 
 def create_model(args):
-    # Creating model
     kwargs = {
         'random_state':args.seed,
         'verbose':args.verbose,
     }
     if args.model == 'BoostedTree':
-        for k in ['max_depth', 'n_estimators', 'loss', 'learning_rate', 'criterion', 'max_features', 'min_samples_split', 'subsample']:
-            if k in args:
-                kwargs[k] = getattr(args, k)
-        clf = GradientBoostingClassifier(**kwargs)
+        clf = GradientBoostingClassifier(learning_rate=args.learning_rate, n_estimators=args.n_estimators, **kwargs)
     elif args.model == 'RandomForest':
-        for k in ['max_depth', 'n_estimators', 'loss', 'learning_rate', 'criterion', 'max_features', 'min_samples_split', 'subsample']:
-            if k in args:
-                kwargs[k] = getattr(args, k)
-        clf = RandomForestClassifier(n_jobs=8, **kwargs)
+        clf = RandomForestClassifier(n_jobs=8, n_estimators=args.n_estimators, **kwargs)
     elif args.model == 'AdaBoost':
         clf = AdaBoostClassifier(n_estimators=args.n_estimators, random_state=args.seed)
     elif args.model == 'LogisticRegression':
@@ -104,39 +97,33 @@ def create_model(args):
         clf = LogisticRegression(random_state=args.seed, verbose=args.verbose, max_iter=max_iter, solver='sag')
         # clf = AdaBoostClassifier(clf, random_state=args.seed, n_estimators=args.n_estimators)
         clf = BaggingClassifier(clf, n_estimators=args.n_estimators, n_jobs=8, verbose=2)
-    elif args.model == 'SVM':
-        clf = SVC(probability=True, random_state=args.seed, verbose=2)
-        # clf = AdaBoostClassifier(clf, random_state=args.seed, n_estimators=args.n_estimators)
-        # clf = BaggingClassifier(clf, n_estimators=args.n_estimators, n_jobs=8, verbose=2)
     elif args.model == 'MLP':
         clf = MLPClassifier(hidden_layer_sizes=100, activation='relu', solver='adam', alpha=0.0001, batch_size='auto', learning_rate='constant', learning_rate_init=0.001, power_t=0.5, max_iter=200, shuffle=True, random_state=None, tol=0.0001, verbose=2, warm_start=False, momentum=0.9, nesterovs_momentum=True, early_stopping=False, validation_fraction=0.1, beta_1=0.9, beta_2=0.999, epsilon=1e-08, n_iter_no_change=10, max_fun=15000)
     else:
         raise ValueError(f"Unkown model {args.model}")
-
     return clf
 
 def setup_data(args):
     # load from cache ?
-    cache_dir = "/mnt/hdd/sbaio/asos/"
-    cache_file = cache_dir+f"cus{args.use_customer_data}_prod{args.use_product_data}_view{args.use_views_data}_pur{args.use_purchase_data}_held{args.heldout_frac}.pkl"
+    cache_file = args.cache_dir+f"cus{args.use_customer_data}_prod{args.use_product_data}_view{args.use_views_data}_pur{args.use_purchase_data}_held{args.heldout_frac}.pkl"
     if os.path.exists(cache_file):
         df, label, customerId, train_ind, val_ind, df_test = pickle.load(open(cache_file, "rb"))
         return df, label, customerId, train_ind, val_ind, df_test
 
     # load training pairs
-    df = pd.read_csv("data/labels_training.txt")
+    df = pd.read_csv(args.data_dir+"labels_training.txt")
     print("Loaded training pairs ", df.shape)
 
     if args.test:
         # load testing pairs
-        df_test = pd.read_csv("data/labels_predict.txt")
+        df_test = pd.read_csv(args.data_dir+"labels_predict.txt")
         print("Loaded testing pairs ", df_test.shape)
     else:
         df_test = None
 
     ## use customer data
     if args.use_customer_data:
-        customers = pd.read_csv("data/customers.txt")
+        customers = pd.read_csv(args.data_dir+"customers.txt")
         # merge customers into df
         df = pd.merge(df, customers, left_on=['customerId'], right_on=['customerId'], how='left')
 
@@ -161,7 +148,7 @@ def setup_data(args):
         
     ## use product data
     if args.use_product_data:
-        products = pd.read_csv("data/products.txt")
+        products = pd.read_csv(args.data_dir+"products.txt")
         # replace dateOnSite with year, month, day ...
         dateOnSite = process_date_col(products['dateOnSite'])
         products = products.drop(columns=['dateOnSite'])
@@ -180,7 +167,7 @@ def setup_data(args):
     # add views
     if args.use_views_data:
         print("Loading views info ...")
-        views = pd.read_csv("data/views.txt")
+        views = pd.read_csv(args.data_dir+"views.txt")
         views = views.drop(columns=['imageZoom']) # discard imageZoom since all 0 but 1 value
         aggr_views = views.groupby(['customerId','productId']).sum() # aggregate the views
         # update df
@@ -220,8 +207,24 @@ def setup_data(args):
         df_test.drop(columns=['purchase_probability', 'customerId', 'productId'], inplace=True)
 
     out = df, label, customerId, train_ind, val_ind, df_test
-    pickle.dump(out, open(cache_file,"wb"))
+    if os.path.exists(args.cache_dir):
+        pickle.dump(out, open(cache_file,"wb"))
     return out
+
+def fit_column_transformer(df):
+    # encode categorical variables
+    columns = df.columns
+    print(columns)
+    cols_to_encode = ["country", "brand", "productType", "isFemale", "isPremier", "onSale"]
+    cols_to_encode = [k for k in cols_to_encode if k in columns]
+    column_trans = make_column_transformer(
+        (OneHotEncoder(handle_unknown='ignore'), cols_to_encode),
+        remainder="passthrough",
+    )
+    print("Fitting column transformer on categorical variables")
+    column_trans.fit(df)
+    return column_trans
+
 
 def main(args):
     print("=================================")
@@ -253,40 +256,73 @@ def main(args):
 
     train_df = df.iloc[train_ind]
     val_df = df.iloc[val_ind]
-    train_dset = lgb.Dataset(train_df, label=label.iloc[train_ind])
-    val_dset = lgb.Dataset(val_df, label=label.iloc[val_ind])
+    train_target = label.iloc[train_ind]
+    val_target = label.iloc[val_ind]
 
-    num_round = args.n_estimators
-    if args.cv:
-        print(f"Cross validation {args.nfolds} folds")
-        kfold = GroupKFold(n_splits=args.nfolds)
-        folds = kfold.split(X=df.iloc[train_ind], groups=customerId.iloc[train_ind])
-        eval_hist = lgb.cv(param, train_dset, num_round, folds=folds)
+    if args.model == "light_gbdt":
+        train_dset = lgb.Dataset(train_df, label=train_target)
+        val_dset = lgb.Dataset(val_df, label=val_target)
 
-        mean = eval_hist['auc-mean'][-1]
-        std = eval_hist['auc-stdv'][-1]
-        print(f"==> {mean:0.4f}±{std:0.4f}")
-        return mean, std
+        num_round = args.n_estimators
+        if args.cv:
+            print(f"Cross validation {args.nfolds} folds")
+            kfold = GroupKFold(n_splits=args.nfolds)
+            folds = kfold.split(X=df.iloc[train_ind], groups=customerId.iloc[train_ind])
+            eval_hist = lgb.cv(param, train_dset, num_round, folds=folds)
+
+            mean = eval_hist['auc-mean'][-1]
+            std = eval_hist['auc-stdv'][-1]
+            print(f"==> {mean:0.4f}±{std:0.4f}")
+            return mean, std
+        else:
+            print("Training model ")
+            bst = lgb.train(param, train_dset, num_round, valid_sets=[val_dset])
+
+            train_pred = bst.predict(train_df)
+            train_auc = roc_auc_score(train_target, train_pred)
+            val_auc = bst.best_score['valid_0']['auc']
+            print(f"Train {train_auc:0.4f}, Val {val_auc:0.4f}")
+
+        if args.test:
+            outdir = args.outdir if args.outdir else "./"
+            test_pred = bst.predict(df_test)
+            df_test = pd.read_csv(args.data_dir+"labels_predict.txt")
+            df_test['purchase_probability'] = test_pred
+            outfile = outdir+'out.csv'
+            df_test.to_csv(outfile)
+            print(f"Saved to {outfile}")
+        
+        return val_auc, train_auc
     else:
-        print("Training model ")
-        bst = lgb.train(param, train_dset, num_round, valid_sets=[val_dset])
+        clf = create_model(args)
 
-        train_pred = bst.predict(train_df)
-        train_auc = roc_auc_score(label.iloc[train_ind], train_pred)
-        val_auc = bst.best_score['valid_0']['auc']
-        print(f"Train {train_auc:0.4f}, Val {val_auc:0.4f}")
+        # fill missing values
+        df = fill_missing_values(df)
+        train_df = df.iloc[train_ind]
+        val_df = df.iloc[val_ind]
 
-    # if outdir provided ?
-    if args.test:
-        outdir = args.outdir if args.outdir else "./"
-        test_pred = bst.predict(df_test)
-        df_test = pd.read_csv("data/labels_predict.txt")
-        df_test['purchase_probability'] = test_pred
-        outfile = outdir+'out.csv'
-        df_test.to_csv(outfile)
-        print(f"Saved to {outfile}")
-    
-    return val_auc, train_auc
+        # process df: fill missing values, onehot encode categorical variable
+        col_trans = fit_column_transformer(train_df)
+
+        # train on train_df and validate on val_df
+        train_feats = col_trans.transform(train_df)
+        val_feats = col_trans.transform(val_df)
+
+        print("Fitting model ... ")
+        clf.fit(train_feats, train_target)
+
+        print("Predicting on train samples ...")
+        train_pred = clf.predict_proba(train_feats)[:,1]
+        train_auc = roc_auc_score(train_target, train_pred)
+        print(f"==> {train_auc}")
+
+        print("Predicting on main validation set ... ")
+        val_pred = clf.predict_proba(val_feats)[:,1]
+        val_auc = roc_auc_score(val_target, val_pred)
+        print(f"==> {val_auc}")
+
+        return val_auc, train_auc
+
     
 def grid_search(args, param_ranges):
     args.cv = 1
@@ -321,14 +357,15 @@ if __name__ == '__main__':
         main(args)
     elif args.task == 'grid_search':
         param_ranges = {
-            "learning_rate":[0.1, 0.2, 0.05],
-            "num_leaves":[31, 50, 100], #10, 
-            "n_estimators":[100, 200, 300],
+            "learning_rate":[0.1,],#  0.2, 0.05
+            "num_leaves":[200, 150, 100], #31, 50, 100, 
+            "n_estimators":[400], # 200, 300
         }
         grid_search(args, param_ranges)
     elif args.task == "data_ablation":
         param_ranges = {
             "n_estimators":[100],
+            "num_leaves":[150,],
             "use_views_data":[1, 0],
             "use_product_data":[1, 0],
             "use_purchase_data":[1, 0],
@@ -343,8 +380,3 @@ if __name__ == '__main__':
         }
         grid_search(args, param_ranges)
 
-# TODO:
-# implement other models ?
-# run data ablation
-# run grid search
-# run data_size comparison
