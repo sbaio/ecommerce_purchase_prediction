@@ -242,6 +242,15 @@ def main(args):
         'metric':'auc',
     }
 
+    if args.data_frac != 1:
+        print(f"Keeping only {args.data_frac} of the training data")
+        # sample inds by grouping customers
+        frac_ind, dropped_ind = sample_customers(df.iloc[train_ind], customerId.iloc[train_ind], frac=args.data_frac)
+        print(f"  From {len(train_ind)} to {len(frac_ind)}")
+        train_ind = train_ind[frac_ind]
+        
+        print(f"  Train {train_ind.shape[0]}, val {val_ind.shape[0]}")
+
     train_df = df.iloc[train_ind]
     val_df = df.iloc[val_ind]
     train_dset = lgb.Dataset(train_df, label=label.iloc[train_ind])
@@ -307,30 +316,35 @@ def grid_search(args, param_ranges):
 
 if __name__ == '__main__':
     args = parse_args()
+    args.outdir = f"out/{args.task}/"
     if args.task == 'main':
         main(args)
     elif args.task == 'grid_search':
-        args.outdir = "out/grid_search/"
         param_ranges = {
             "learning_rate":[0.1, 0.2, 0.05],
-            "num_leaves":[10, 31, 50, 100],
-            'n_estimators':[100, 200, 300],
+            "num_leaves":[31, 50, 100], #10, 
+            "n_estimators":[100, 200, 300],
         }
         grid_search(args, param_ranges)
     elif args.task == "data_ablation":
-        args.outdir = "out/data_ablation/"
         param_ranges = {
-            'n_estimators':[100],
+            "n_estimators":[100],
             "use_views_data":[1, 0],
             "use_product_data":[1, 0],
             "use_purchase_data":[1, 0],
             "use_customer_data":[1, 0],
         }
         grid_search(args, param_ranges)
-
+    elif args.task == "data_size":
+        param_ranges = {
+            "n_estimators":[100],
+            "data_frac":[0.1, 0.5, 1.0],
+            "num_leaves":[100,], 
+        }
+        grid_search(args, param_ranges)
 
 # TODO:
 # implement other models ?
 # run data ablation
 # run grid search
-# add data_frac ?
+# run data_size comparison
