@@ -8,3 +8,4 @@ out.json
 out/
 lightgbm_out/
 *.csv
+*.zip
