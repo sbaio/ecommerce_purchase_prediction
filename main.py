@@ -32,12 +32,14 @@ def parse_args():
     parser.add_argument("-use_product_data", type=int, default=1, help="Use product data ?")
     parser.add_argument("-use_views_data", type=int, default=1, help="Use views data ?")
     parser.add_argument("-use_purchase_data", type=int, default=1, help="Use purchase data ?")
+    parser.add_argument("-fill_nan", type=int, default=1, help="Fill NaNs")
 
     parser.add_argument("-max_iter", type=int, default=100, help="Max iter for logistic regression")
 
     # lightgbm params
     parser.add_argument("-learning_rate", type=float, default=0.1, help="learning rate")
     parser.add_argument("-boosting_type", type=str, default="gbdt",  help="Type of boosting gbdt, dart, goss, rf")
+    parser.add_argument("-num_leaves", type=int, default=100, help="Nb of leaves")
     
     parser.add_argument("-cv", type=int, default=1, help="perform cross validation or just train and validate on held out set")
     
@@ -79,6 +81,8 @@ def fill_missing_values(features):
     return features
 
 def sample_customers(X, groups, frac=0.1):
+    if frac == 0:
+        return np.arange(len(X))
     kfold = GroupKFold(n_splits=int(1/frac))
     other_index, frac_index = list(kfold.split(X=X, groups=groups))[0]
     # sample_X = X.iloc[val_index]
@@ -111,15 +115,15 @@ def get_purchase_info():
 
 def process_date_col(col):
     date = pd.to_datetime(col, errors='coerce')
-    print(f'Nb nan : {date.dt.month.isna().sum()}, filling with median ...')
-    date = date.fillna(date.median())
-
+    # print(f'Nb nan : {date.dt.month.isna().sum()}, filling with median ...')
+    # date = date.fillna(date.median())
+    name = col.name
     return pd.DataFrame({
-        # 'year':date.dt.year,
-        'month':date.dt.month, # categorical 12
-        'week':date.dt.isocalendar().week,# categorical 53
-        'day':date.dt.day, # categorical 31
-        'dayname':date.dt.day_name(), # categorical 7
+        f'{name}_year':date.dt.year,
+        f'{name}_month':date.dt.month, # categorical 12
+        # f'{name}_week':date.dt.isocalendar().week,# categorical 53
+        f'{name}_day':date.dt.day, # categorical 31
+        f'{name}_dayname':date.dt.day_name(), # categorical 7
     })
 
 def fit_column_transformer(df):
@@ -129,12 +133,54 @@ def fit_column_transformer(df):
     cols_to_encode = ["country", "brand", "productType", "isFemale", "isPremier", "onSale"]
     cols_to_encode = [k for k in cols_to_encode if k in columns]
     column_trans = make_column_transformer(
-        (OneHotEncoder(), cols_to_encode),
+        (OneHotEncoder(handle_unknown='ignore'), cols_to_encode),
         remainder="passthrough",
     )
     print("Fitting column transformer on categorical variables")
     column_trans.fit(df)
     return column_trans
+
+def create_features_from_df(df, args):
+    
+    if args.use_purchase_data:
+        customer_purchase_count, product_purchase_count = get_purchase_info()
+
+        # add customer purchase info ?
+        df = pd.merge(df, customer_purchase_count, left_on=['customerId'], right_on=['customerId'], how='left')
+        df.customerPurchaseCount.fillna(0, inplace=True)
+
+        # add product purchase info ?
+        df = pd.merge(df, product_purchase_count, left_on=['productId'], right_on=['productId'], how='left')
+        df.productPurchaseCount.fillna(0, inplace=True)
+
+    if args.use_customer_data:
+        print("Using customers dataframe")
+        # load customer info
+        customers = pd.read_csv("data/customers.txt")
+        df = pd.merge(df, customers, left_on=['customerId'], right_on=['customerId'], how='left')
+
+        df.isFemale = df.isFemale.map({"True":1, "False":0, '1':1,'0':0, 1:1, 0:0}, na_action='ignore')
+        df.isPremier = df.isPremier.map({"True":1, "False":0, '1':1,'0':0, 1:1, 0:0}, na_action='ignore')
+        
+    if args.use_product_data:
+        print("Using products dataframe")
+        # load product info
+        products = pd.read_csv("data/products.txt")
+        products = products.drop(columns=['dateOnSite'])
+        df = pd.merge(df, products, left_on=['productId'], right_on=['productId'], how='left')
+
+    if args.use_views_data:
+        print("Loading views info ...")
+        views = pd.read_csv("data/views.txt")
+        views = views.drop(columns=['imageZoom']) # discard imageZoom column since all 0 but 1 value
+        aggr_views = views.groupby(['customerId','productId']).sum() # aggregate the views of a customer of a product by summing
+        df = pd.merge(df, aggr_views, right_index=True, left_on=['customerId', 'productId'])
+
+    if args.fill_nan:
+        print("Filling missing values")
+        df = fill_missing_values(df)
+
+    return df
 
 def load_training_data(args, use_cache=True):
     # rename to data/cache_frac_10.pkl
@@ -165,12 +211,13 @@ def load_training_data(args, use_cache=True):
     df = pd.read_csv("data/labels_training.txt")
     print("Loaded training pairs ", df.shape)
 
-    # keep a separate validation set
+    # Keep a held-out validation set
     print("Keeping a separate validation set ")
     val_ind, train_ind = sample_customers(df, df['customerId'], frac=0.1)
 
+    # Subsample a fraction of the training data
     if args.data_frac != 1.:
-        print("Keeping only a fraction of the training data ")
+        print("Keeping only a fraction of the training data")
         train_df = df.iloc[train_ind]
         frac_ind, dropped_ind = sample_customers(train_df, train_df['customerId'], frac=args.data_frac)
         train_ind = train_ind[frac_ind]
@@ -180,48 +227,10 @@ def load_training_data(args, use_cache=True):
         val_ind = np.arange(val_ind.shape[0])+train_ind.shape[0]
         print(f"  Train {train_ind.shape[0]}, val {val_ind.shape[0]}")
 
+    # Create features by including info from customer, product and views tables
+    df = create_features_from_df(df, args)
     purchased = df['purchased'].astype(int)
     customerId = df['customerId']
-    # productId = df['productId']
-
-    # load customer info
-    customers = pd.read_csv("data/customers.txt")
-
-    # load product info
-    products = pd.read_csv("data/products.txt")
-    products = products.drop(columns=['dateOnSite'])
-    
-    if args.use_purchase_data:
-        customer_purchase_count, product_purchase_count = get_purchase_info()
-
-        # add customer purchase info ?
-        df = pd.merge(df, customer_purchase_count, left_on=['customerId'], right_on=['customerId'], how='left')
-        df.customerPurchaseCount.fillna(0, inplace=True)
-
-        # add product purchase info ?
-        df = pd.merge(df, product_purchase_count, left_on=['productId'], right_on=['productId'], how='left')
-        df.productPurchaseCount.fillna(0, inplace=True)
-
-    if args.use_customer_data:
-        print("Using customers dataframe")
-        # print(customers)
-        df = pd.merge(df, customers, left_on=['customerId'], right_on=['customerId'], how='left')
-        
-    if args.use_product_data:
-        print("Using products dataframe")
-        # print(products)
-        df = pd.merge(df, products, left_on=['productId'], right_on=['productId'], how='left')
-
-    if args.use_views_data:
-        print("Loading views info ...")
-        views = pd.read_csv("data/views.txt")
-        views = views.drop(columns=['imageZoom']) # discard imageZoom column since all 0 but 1 value
-        aggr_views = views.groupby(['customerId','productId']).sum() # aggregate the views of a customer of a product by summing
-        df = pd.merge(df, aggr_views, right_index=True, left_on=['customerId', 'productId'])
-
-    ## preprocessing features
-    print("Filling missing values")
-    df = fill_missing_values(df)
 
     df.drop(columns=['purchased', 'customerId', 'productId'], inplace=True)
 
@@ -242,8 +251,25 @@ def load_training_data(args, use_cache=True):
         pickle.dump(d, open(cache_file,"wb"))
     return train_ind, val_ind, df, purchased, customerId, column_trans
 
-def load_test_data():
-    1
+def load_test_data(args, cache_file="data/test_features_cache.csv"):
+    
+    if not os.path.exists(cache_file):
+        # load testing pairs
+        df = pd.read_csv("data/labels_predict.txt")
+        print("Loaded testing pairs ", df.shape)
+
+        df = create_features_from_df(df, args)
+        
+        df.drop(columns=['purchase_probability', 'customerId', 'productId'], inplace=True)
+
+        df.to_csv(cache_file, index=False)
+    else:
+        df = pd.read_csv(cache_file)
+
+    # apply column transformer
+    # column_trans.set_params(onehotencoder__handle_unknown='ignore')
+
+    return df
 
 def create_model(args):
     # Creating model
