@@ -10,7 +10,7 @@ from sklearn.model_selection import GroupKFold
 from sklearn.ensemble import RandomForestClassifier,GradientBoostingClassifier,AdaBoostClassifier,BaggingClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, classification_report, confusion_matrix
 from sklearn.compose import make_column_transformer
 from sklearn.preprocessing import OneHotEncoder
 
@@ -105,7 +105,7 @@ def create_model(args):
 
 def setup_data(args):
     # load from cache ?
-    cache_file = args.cache_dir+f"cus{args.use_customer_data}_prod{args.use_product_data}_view{args.use_views_data}_pur{args.use_purchase_data}_held{args.heldout_frac}.pkl"
+    cache_file = args.cache_dir+f"cus{args.use_customer_data}_prod{args.use_product_data}_view{args.use_views_data}_pur{args.use_purchase_data}_held{args.heldout_frac}_test{args.test}.pkl"
     if os.path.exists(cache_file):
         df, label, customerId, train_ind, val_ind, df_test = pickle.load(open(cache_file, "rb"))
         return df, label, customerId, train_ind, val_ind, df_test
@@ -233,8 +233,10 @@ def main(args):
     np.random.seed(args.seed)
 
     df, label, customerId, train_ind, val_ind, df_test = setup_data(args)
-
+    
     param = {
+        'boosting_type':args.boosting_type,
+        'is_unbalance':True,
         'num_leaves': args.num_leaves, 
         'objective': 'binary',
         'learning_rate':args.learning_rate,
@@ -277,20 +279,30 @@ def main(args):
         else:
             print("Training model ")
             bst = lgb.train(param, train_dset, num_round, valid_sets=[val_dset])
-
             train_pred = bst.predict(train_df)
             train_auc = roc_auc_score(train_target, train_pred)
             val_auc = bst.best_score['valid_0']['auc']
             print(f"Train {train_auc:0.4f}, Val {val_auc:0.4f}")
 
+
+            # classification report
+            val_pred = bst.predict(val_df)
+            print(classification_report(val_target, val_pred > 0.5))
+            print(confusion_matrix(val_target, val_pred>0.5))
+
         if args.test:
+            print("Testing ...")
             outdir = args.outdir if args.outdir else "./"
+            os.makedirs(outdir, exist_ok=True)
+            bst.save_model(outdir + 'model.txt')
             test_pred = bst.predict(df_test)
             df_test = pd.read_csv(args.data_dir+"labels_predict.txt")
             df_test['purchase_probability'] = test_pred
             outfile = outdir+'out.csv'
             df_test.to_csv(outfile)
             print(f"Saved to {outfile}")
+
+            
         
         return val_auc, train_auc
     else:
@@ -352,14 +364,17 @@ def grid_search(args, param_ranges):
 
 if __name__ == '__main__':
     args = parse_args()
+    # from argparse import Namespace
+    # args = Namespace(boosting_type='gbdt', cache_dir='/mnt/hdd/sbaio/asos/', cv=0, data_dir='data/', data_frac=1.0, heldout_frac=0.1, learning_rate=0.1, max_depth=3, model='light_gbdt', n_estimators=10, nfolds=5, num_leaves=150, outdir='out/main/', seed=7, task='main', test=1, use_customer_data=1, use_product_data=1, use_purchase_data=1, use_views_data=1, verbose=0)
     args.outdir = f"out/{args.task}/"
     if args.task == 'main':
         main(args)
     elif args.task == 'grid_search':
         param_ranges = {
             "learning_rate":[0.1,],#  0.2, 0.05
-            "num_leaves":[200, 150, 100], #31, 50, 100, 
-            "n_estimators":[400], # 200, 300
+            "num_leaves":[150], #31, 50, 100, 
+            "n_estimators":[100], # 200, 300
+            "data_frac":[0.1, 0.5, 1]
         }
         grid_search(args, param_ranges)
     elif args.task == "data_ablation":
