@@ -89,7 +89,7 @@ def create_model(args):
     if args.model == 'BoostedTree':
         clf = GradientBoostingClassifier(learning_rate=args.learning_rate, n_estimators=args.n_estimators, **kwargs)
     elif args.model == 'RandomForest':
-        clf = RandomForestClassifier(n_jobs=8, n_estimators=args.n_estimators, **kwargs)
+        clf = RandomForestClassifier(n_estimators=args.n_estimators, **kwargs)
     elif args.model == 'AdaBoost':
         clf = AdaBoostClassifier(n_estimators=args.n_estimators, random_state=args.seed)
     elif args.model == 'LogisticRegression':
